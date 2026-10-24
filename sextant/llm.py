@@ -10,6 +10,7 @@ import json
 import re
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from typing import Any
 
 from sextant.config import Settings
@@ -26,7 +27,8 @@ class LLMTruncated(LLMError):
     Reasoning models bill their chain-of-thought to the same ``max_tokens``
     budget as the answer, so a large prompt can consume the entire allowance
     and return an empty ``content`` with ``finish_reason="length"``. Retrying
-    the identical request cannot help; the caller has to shrink the request.
+    the identical request cannot help; the caller has to change it — raise the
+    budget for one long-form document, or split a per-record batch in two.
     """
 
 
@@ -412,6 +414,7 @@ def analyze_report_papers(
     papers: list[dict[str, Any]],
     notes: list[str] | None = None,
     directions: list[str] | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> dict[str, dict[str, str]]:
     """Extract the bilingual report fields that enrichment does not produce.
 
@@ -419,6 +422,9 @@ def analyze_report_papers(
     report additionally needs a research-and-application impact paragraph in
     both languages and a category label per paper. Batches are independent so
     one bad request only loses its own papers.
+
+    ``on_progress(done, total)`` fires after each batch so the console can show
+    real progress instead of a spinner with no idea how long the wait is.
     """
     if not settings.llm_enabled or not papers:
         return {}
@@ -434,6 +440,8 @@ def analyze_report_papers(
                 directions=directions,
             )
         )
+        if on_progress is not None:
+            on_progress(min(start + batch_size, len(papers)), len(papers))
     return analysis
 
 
@@ -558,10 +566,19 @@ REPORT_SCHEMA = """{
   ]
 }"""
 
-REPORT_SYNTHESIS_MAX_TOKENS = 8000
+#: Synthesis is the one JSON that must describe every paper at once: an
+#: executive summary, six bilingual sections and 3–6 subthemes. On a reasoning
+#: model the chain of thought comes out of this same allowance — a real run
+#: spent 4 981 reasoning tokens on 20 papers and 7 687 on 5, so 8 000 left no
+#: room for the JSON. 16 000 covers reasoning plus the full answer and is
+#: accepted by the configured provider; truncation escalates the budget up to
+#: REPORT_SYNTHESIS_TOKEN_CAP instead of shrinking the paper set.
+REPORT_SYNTHESIS_MAX_TOKENS = 16000
+#: Provider-verified ceiling for the escalation retries (16k/32k/64k all
+#: answered 200 OK). Beyond this the caller falls back to deterministic
+#: method-family grouping rather than burning more reasoning tokens.
+REPORT_SYNTHESIS_TOKEN_CAP = 64000
 REPORT_SYNTHESIS_TIMEOUT_SECONDS = 180.0
-#: Below this many papers a retry cannot meaningfully shrink the request.
-MIN_SYNTHESIS_PAPERS = 3
 
 REPORT_SYNTHESIS_RULES = (
     "写作规则：\n"
@@ -617,18 +634,27 @@ def synthesize_report(
     directions: list[str] | None = None,
     notes: list[str] | None = None,
     correction: str = "",
+    max_tokens: int | None = None,
 ) -> dict[str, Any] | None:
     """Write the integrated report from the paper set in one JSON call.
 
-    On truncation the paper set is halved and retried: the answer scales with
-    the number of papers, so a smaller request is the retry that can succeed.
+    On truncation the *budget* is raised and the paper set is kept intact.
+    Reasoning models truncate because of the thinking, not the input size — a
+    real run spent more reasoning tokens on 5 papers than on 20 — so halving
+    the papers cannot fix it and only pushed the dropped papers into the
+    report's "other" bucket. When the budget cap is still not enough, return
+    ``{}``: the caller then keeps every card and groups the papers by their
+    method family instead of emitting no report at all. ``None`` is reserved
+    for "the model gave us nothing usable" (network error, malformed JSON),
+    where skipping the report is the honest outcome.
 
     ``correction`` carries a targeted instruction for the retry that follows a
     contract violation (for example the model narrating the retrieval process
-    instead of the literature) without shrinking the paper set.
+    instead of the literature) without changing the paper set.
     """
     if not settings.llm_enabled or not papers:
         return None
+    budget = max_tokens or settings.llm_report_synthesis_max_tokens or REPORT_SYNTHESIS_MAX_TOKENS
     compact = [
         {
             "record_id": row.get("record_id"),
@@ -661,24 +687,31 @@ def synthesize_report(
             settings,
             system=REPORT_SYSTEM,
             user=prompt,
-            max_tokens=settings.llm_report_synthesis_max_tokens or REPORT_SYNTHESIS_MAX_TOKENS,
+            max_tokens=budget,
             timeout=settings.llm_report_timeout_seconds or REPORT_SYNTHESIS_TIMEOUT_SECONDS,
         )
     except LLMTruncated as exc:
-        reduced = papers[: max(MIN_SYNTHESIS_PAPERS, len(papers) // 2)]
-        if len(reduced) >= len(papers):
+        if budget >= REPORT_SYNTHESIS_TOKEN_CAP:
             if notes is not None:
-                notes.append(f"综合写作输出被截断（{exc}），已跳过")
-            return None
+                notes.append(
+                    f"综合写作在 max_tokens={budget} 下仍被截断（{exc}），"
+                    "改用按方法家族的确定性分组，全部文献保留在报告中"
+                )
+            return {}
+        raised = min(REPORT_SYNTHESIS_TOKEN_CAP, budget * 2)
         if notes is not None:
-            notes.append(f"综合写作输出被截断（{exc}），改用前 {len(reduced)} 篇重试")
+            notes.append(
+                f"综合写作输出被截断（{exc}），预算 {budget} 提升至 {raised} 重试，"
+                f"论文集保持 {len(papers)} 篇不变"
+            )
         return synthesize_report(
             settings,
             topic=topic,
-            papers=reduced,
+            papers=papers,
             directions=directions,
             notes=notes,
             correction=correction,
+            max_tokens=raised,
         )
     except LLMError as exc:
         if notes is not None:

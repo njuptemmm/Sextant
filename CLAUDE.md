@@ -4,7 +4,7 @@
 
 ## 项目是什么
 
-Sextant 是一个**研究情报追踪 Agent**：给定一个研究主题，自动完成「查询规划 → 多源检索 → 去重归一 → 相关性排序 → 生成可筛选的证据目录 → 生成中英双语调研报告」，并把整条链路通过 Web 控制台、SSE 实时进度、MCP 工具接口和可观测日志暴露出来。调研报告是依赖 LLM 的可选阶段，未配置模型时必须整段跳过且不影响证据目录。
+Sextant 是一个**研究情报追踪 Agent**：给定一个研究主题，自动完成「查询规划 → 多源检索 → 去重归一 → 相关性排序 → 生成可筛选的证据目录」，并能按需生成中英双语调研报告；整条链路通过 Web 控制台、SSE 实时进度、MCP 工具接口和可观测日志暴露出来。调研报告是依赖 LLM 的**独立任务**（有自己的 `run_id`、日志和 SSE 流），不在检索链路内；未配置模型时入口直接拒绝启动，且不影响证据目录。
 
 目标场景是参赛作品（赛道 B：AI Application），因此**可运行、可复现、可讲解**优先于功能数量。
 
@@ -22,7 +22,7 @@ sextant/
 ├── sextant/
 │   ├── config.py             所有环境变量集中读取，禁止在业务代码里直接 os.getenv
 │   ├── engine/               从既有能力移植的检索/解析/渲染内核，保持纯函数风格
-│   ├── pipeline/             垂直切片：plan → retrieve → normalize → rank → render → report
+│   ├── pipeline/             垂直切片：plan → retrieve → normalize → rank → render；report.py 为按需独立任务
 │   ├── llm.py                OpenAI 兼容接口封装（可选能力，缺失时降级）
 │   ├── runlog.py             JSONL 运行日志 + 内存事件总线
 │   ├── api/                  FastAPI 应用、路由、后台任务、SSE

@@ -17,8 +17,17 @@ from sextant.engine.common import (
     report_content_zh_file,
 )
 from sextant.engine.render_html import summary_file
-from sextant.pipeline.report import build_report
-from sextant.workspace import create_topic, topic_dir
+from sextant.pipeline.report import build_report, run_report
+from sextant.runlog import read_events
+from sextant.workspace import (
+    QUERIES_FILE,
+    create_topic,
+    read_ranked,
+    read_runs,
+    topic_dir,
+    write_json,
+    write_ranked,
+)
 
 SECTIONS_ZH = {
     "research_question": "本报告关注大语言模型智能体在规划、工具使用与长程任务中的评测问题与方法差异。",
@@ -163,7 +172,7 @@ def test_build_report_writes_bilingual_content_and_renders(llm_settings, monkeyp
     assert notes == []
 
 
-def test_build_report_folds_unassigned_papers_into_other(llm_settings, monkeypatch):
+def test_build_report_groups_unassigned_papers_by_method_family(llm_settings, monkeypatch):
     topic, root = _topic(llm_settings)
     rows = [_row(1), _row(2), _row(3)]
     synthesis = _synthesis([row["record_id"] for row in rows])
@@ -178,9 +187,96 @@ def test_build_report_folds_unassigned_papers_into_other(llm_settings, monkeypat
 
     assert target is not None
     content_zh = read_json(report_content_zh_file(root), default={})
+    # The leftover keeps its method family instead of sinking into "other".
+    assert content_zh["subthemes"][-1]["title"] == "评测方法"
+    assert rows[2]["record_id"] in content_zh["subthemes"][-1]["paper_ids"]
+    assert any("按方法家族" in note for note in notes)
+    assert not any(theme["title"] == OTHER_DIRECTION for theme in content_zh["subthemes"])
+
+
+def test_build_report_merges_leftovers_into_matching_theme(llm_settings, monkeypatch):
+    """Leftovers join an existing theme of the same family instead of duplicating it."""
+    topic, root = _topic(llm_settings)
+    rows = [_row(1), _row(2), _row(3)]
+    synthesis = _synthesis([row["record_id"] for row in rows])
+    synthesis["subthemes"] = [
+        {
+            "title_zh": "评测方法",
+            "title_en": "Evaluation methods",
+            "summary_zh": "这一方向关注基准构建、任务设计与评测信号，目标是让智能体能力可复现地比较。",
+            "summary_en": "This family covers benchmark construction, task design and evaluation signals.",
+            "paper_ids": [rows[0]["record_id"]],
+        }
+    ]
+    monkeypatch.setattr("sextant.pipeline.report.analyze_report_papers", lambda *a, **k: _analysis(rows))
+    monkeypatch.setattr("sextant.pipeline.report.synthesize_report", lambda *a, **k: synthesis)
+    notes: list[str] = []
+
+    target = build_report(
+        root, topic=topic, plan={}, ranked=rows, settings=llm_settings, notes=notes
+    )
+
+    assert target is not None
+    content_zh = read_json(report_content_zh_file(root), default={})
+    assert len(content_zh["subthemes"]) == 1
+    theme = content_zh["subthemes"][0]
+    assert theme["title"] == "评测方法"
+    assert theme["paper_ids"] == [row["record_id"] for row in rows]
+    # The model's own review is kept; only the grouping was repaired.
+    assert "基准构建" in theme["summary"]
+
+
+def test_build_report_uses_other_only_when_no_method_category(llm_settings, monkeypatch):
+    topic, root = _topic(llm_settings)
+    rows = [_row(1), _row(2), _row(3)]
+    rows[2]["research_direction"] = ""
+    analysis = _analysis(rows)
+    analysis[rows[2]["record_id"]]["method_category"] = ""
+    synthesis = _synthesis([row["record_id"] for row in rows])
+    synthesis["subthemes"] = synthesis["subthemes"][:1]
+    monkeypatch.setattr("sextant.pipeline.report.analyze_report_papers", lambda *a, **k: analysis)
+    monkeypatch.setattr("sextant.pipeline.report.synthesize_report", lambda *a, **k: synthesis)
+    notes: list[str] = []
+
+    target = build_report(
+        root, topic=topic, plan={}, ranked=rows, settings=llm_settings, notes=notes
+    )
+
+    assert target is not None
+    content_zh = read_json(report_content_zh_file(root), default={})
     assert content_zh["subthemes"][-1]["title"] == OTHER_DIRECTION
     assert rows[2]["record_id"] in content_zh["subthemes"][-1]["paper_ids"]
-    assert any("并入" in note for note in notes)
+    assert any("缺少方法类别" in note for note in notes)
+
+
+def test_build_report_keeps_every_paper_when_synthesis_returns_empty(llm_settings, monkeypatch):
+    """The truncation endgame: no synthesis at all, still no "other" dumping ground."""
+    topic, root = _topic(llm_settings)
+    families = ["评测方法", "基准构建", "污染控制", "智能体架构"]
+    rows = [_row(index) for index in range(1, 21)]
+    for index, row in enumerate(rows):
+        row["research_direction"] = families[index // 5]
+    analysis = _analysis(rows)
+    for row in rows:
+        analysis[row["record_id"]]["method_category"] = row["research_direction"]
+    monkeypatch.setattr("sextant.pipeline.report.analyze_report_papers", lambda *a, **k: analysis)
+    # synthesize_report returns {} once the token cap is exhausted.
+    monkeypatch.setattr("sextant.pipeline.report.synthesize_report", lambda *a, **k: {})
+    notes: list[str] = []
+
+    target = build_report(
+        root, topic=topic, plan={}, ranked=rows, settings=llm_settings, notes=notes
+    )
+
+    assert target is not None
+    content_zh = read_json(report_content_zh_file(root), default={})
+    themes = content_zh["subthemes"]
+    assert [theme["title"] for theme in themes] == families
+    assert {pid for theme in themes for pid in theme["paper_ids"]} == {row["record_id"] for row in rows}
+    assert all(len(theme["paper_ids"]) == 5 for theme in themes)
+    assert not any(theme["title"] == OTHER_DIRECTION for theme in themes)
+    assert "模型未能生成完整综述" in content_zh["executive_summary"]
+    assert any("按方法家族" in note for note in notes)
 
 
 def test_build_report_repairs_short_sections(llm_settings, monkeypatch):
@@ -367,19 +463,8 @@ def test_fallbacks_do_not_describe_the_workflow(llm_settings, monkeypatch):
     assert "dedup" not in joined_en
 
 
-def test_run_pipeline_runs_report_stage_and_records_it(settings, monkeypatch):
-    from sextant.pipeline import runner
-    from sextant.workspace import read_runs
-
-    llm_settings = replace(
-        settings,
-        llm_base_url="https://example.invalid/v1",
-        llm_api_key="test",
-        llm_model="test-model",
-    )
-    topic = create_topic(llm_settings, name="Agent Evaluation", keywords=["agent"])
-    root = topic_dir(llm_settings, topic["topic_id"])
-    rows = [
+def _pipeline_rows() -> list[dict]:
+    return [
         {
             "record_id": f"openalex:W{index}",
             "source": "openalex",
@@ -393,32 +478,10 @@ def test_run_pipeline_runs_report_stage_and_records_it(settings, monkeypatch):
         }
         for index in range(3)
     ]
-    monkeypatch.setattr(
-        runner,
-        "build_query_plan",
-        lambda *a, **k: {"keywords": ["agent"], "directions": ["评测方法"], "queries": []},
-    )
-    monkeypatch.setattr(runner, "retrieve", lambda *a, **k: rows)
-    monkeypatch.setattr(runner, "enrich_records", lambda *a, **k: {})
-    calls: list[dict] = []
-
-    def fake_report(root_arg, *, topic, plan, ranked, settings, notes=None):
-        calls.append({"ranked": len(ranked), "directions": plan.get("directions")})
-        target = root_arg / "output" / "report.html"
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text("<html>report</html>", encoding="utf-8")
-        return target
-
-    monkeypatch.setattr(runner, "build_report", fake_report)
-
-    summary = runner.run_pipeline(llm_settings, topic["topic_id"], run_id="test-report")
-
-    assert calls == [{"ranked": 3, "directions": ["评测方法"]}]
-    assert summary["report"] == str(root / "output" / "report.html")
-    assert read_runs(root)[-1]["report"] == summary["report"]
 
 
-def test_run_pipeline_removes_stale_report_when_stage_is_skipped(settings, monkeypatch):
+def test_run_pipeline_completes_without_building_report(settings, monkeypatch):
+    """The catalog is the pipeline's deliverable; the report is a separate job."""
     from sextant.pipeline import runner
 
     llm_settings = replace(
@@ -426,36 +489,120 @@ def test_run_pipeline_removes_stale_report_when_stage_is_skipped(settings, monke
         llm_base_url="https://example.invalid/v1",
         llm_api_key="test",
         llm_model="test-model",
-        report_enabled=False,
+    )
+    topic = create_topic(llm_settings, name="Agent Evaluation", keywords=["agent"])
+    root = topic_dir(llm_settings, topic["topic_id"])
+    monkeypatch.setattr(
+        runner,
+        "build_query_plan",
+        lambda *a, **k: {"keywords": ["agent"], "directions": ["评测方法"], "queries": []},
+    )
+    monkeypatch.setattr(runner, "retrieve", lambda *a, **k: _pipeline_rows())
+    monkeypatch.setattr(runner, "enrich_records", lambda *a, **k: {})
+    monkeypatch.setattr(
+        "sextant.pipeline.report.build_report",
+        lambda *a, **k: pytest.fail("pipeline must not build the report"),
+    )
+
+    summary = runner.run_pipeline(llm_settings, topic["topic_id"], run_id="test-report")
+
+    assert summary["status"] == "completed"
+    assert "report" not in summary
+    assert "report" not in read_runs(root)[-1]
+    assert not summary_file(root).exists()
+
+
+def test_run_pipeline_removes_stale_report(settings, monkeypatch):
+    """A report describes an older ranked set and must not survive a rerun."""
+    from sextant.pipeline import runner
+
+    llm_settings = replace(
+        settings,
+        llm_base_url="https://example.invalid/v1",
+        llm_api_key="test",
+        llm_model="test-model",
     )
     topic = create_topic(llm_settings, name="Agent Evaluation", keywords=["agent"])
     root = topic_dir(llm_settings, topic["topic_id"])
     stale = summary_file(root)
     stale.parent.mkdir(parents=True, exist_ok=True)
     stale.write_text("<html>old report</html>", encoding="utf-8")
-    rows = [
-        {
-            "record_id": "openalex:W1",
-            "source": "openalex",
-            "title": "Agent evaluation paper",
-            "abstract": "A reproducible benchmark for LLM agents covering planning and tool use. " * 3,
-            "abstract_usable": True,
-            "abstract_source": "source_metadata",
-            "published_at": "2025-01-01",
-            "url": "https://example.org",
-            "journal": "Example Journal",
-        }
-    ]
     monkeypatch.setattr(
         runner, "build_query_plan", lambda *a, **k: {"keywords": ["agent"], "directions": [], "queries": []}
     )
-    monkeypatch.setattr(runner, "retrieve", lambda *a, **k: rows)
+    monkeypatch.setattr(runner, "retrieve", lambda *a, **k: _pipeline_rows()[:1])
     monkeypatch.setattr(runner, "enrich_records", lambda *a, **k: {})
 
-    summary = runner.run_pipeline(llm_settings, topic["topic_id"], run_id="test-no-report")
+    summary = runner.run_pipeline(llm_settings, topic["topic_id"], run_id="test-rerun")
 
-    assert summary["report"] is None
+    assert summary["status"] == "completed"
     assert not stale.exists()
+
+
+def test_run_report_emits_independent_events_and_writes_artifact(llm_settings, monkeypatch):
+    topic = create_topic(llm_settings, name="Agent Evaluation", keywords=["agent"])
+    root = topic_dir(llm_settings, topic["topic_id"])
+    rows = [_row(index) for index in range(1, 4)]
+    write_ranked(root, rows)
+    write_json(root / QUERIES_FILE, {"directions": ["评测方法"]})
+    calls: list[dict] = []
+
+    def fake_build(root_arg, *, topic, plan, ranked, settings, notes=None, on_progress=None):
+        calls.append({"ranked": len(ranked), "directions": plan.get("directions")})
+        if on_progress is not None:
+            on_progress("正在分析 3 篇文献")
+        target = summary_file(root_arg)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("<html>report</html>", encoding="utf-8")
+        return target
+
+    monkeypatch.setattr("sextant.pipeline.report.build_report", fake_build)
+    events: list[dict] = []
+
+    summary = run_report(llm_settings, topic["topic_id"], run_id="report-test", on_event=events.append)
+
+    assert calls == [{"ranked": 3, "directions": ["评测方法"]}]
+    assert summary["status"] == "completed"
+    assert summary["kind"] == "report"
+    assert summary["papers"] == 3
+    assert summary["report"] == str(summary_file(root))
+    assert summary["report_notes"] == []
+    stages = [(event["stage"], event["status"]) for event in events]
+    assert stages == [
+        ("run", "started"),
+        ("report", "started"),
+        ("report", "running"),
+        ("report", "completed"),
+        ("run", "completed"),
+    ]
+    log = read_events(root / "logs" / "report-test.jsonl")
+    assert [event["seq"] for event in log] == [1, 2, 3, 4, 5]
+    assert log[-1]["stage"] == "run" and log[-1]["status"] == "completed"
+    # Report jobs must not masquerade as retrieval runs.
+    assert read_runs(root) == []
+
+
+def test_run_report_fails_without_llm(settings):
+    topic = create_topic(settings, name="Agent Evaluation", keywords=["agent"])
+    root = topic_dir(settings, topic["topic_id"])
+    write_ranked(root, [_row(index) for index in range(1, 4)])
+    events: list[dict] = []
+
+    summary = run_report(settings, topic["topic_id"], run_id="report-no-llm", on_event=events.append)
+
+    assert summary["status"] == "failed"
+    assert "未配置模型" in (summary["error"] or "")
+    assert summary["report"] is None
+    assert not summary_file(root).exists()
+    assert [(event["stage"], event["status"]) for event in events][-1] == ("run", "failed")
+    assert read_ranked(root)
+
+
+def test_run_report_rejects_unknown_topic(settings):
+    from sextant.pipeline.report import ReportError
+
+    with pytest.raises(ReportError):
+        run_report(settings, "does-not-exist")
 
 
 def _analysis_ids(prompt: str) -> list[str]:
@@ -533,11 +680,14 @@ def test_synthesize_report_rejects_unrelated_json(llm_settings, monkeypatch):
     assert notes and "不符合预期" in notes[0]
 
 
-def test_synthesize_report_halves_papers_on_truncation(llm_settings, monkeypatch):
+def test_synthesize_report_raises_budget_on_truncation(llm_settings, monkeypatch):
+    """Truncation is a reasoning-budget problem, so the paper set must not shrink."""
     sizes: list[int] = []
+    budgets: list[int] = []
 
     def fake_chat_json(settings, *, system, user, max_tokens=2048, temperature=0.2, timeout=None):
         sizes.append(len(_synthesis_ids(user)))
+        budgets.append(max_tokens)
         if len(sizes) == 1:
             raise llm.LLMTruncated("输出达到 max_tokens 上限")
         return {"title_zh": "综述", "subthemes": []}
@@ -550,5 +700,27 @@ def test_synthesize_report_halves_papers_on_truncation(llm_settings, monkeypatch
     )
 
     assert result is not None
-    assert sizes == [20, 10]
-    assert notes and "前 10 篇" in notes[0]
+    assert sizes == [20, 20]
+    assert budgets[1] == budgets[0] * 2
+    assert notes and "提升" in notes[0] and "20 篇不变" in notes[0]
+
+
+def test_synthesize_report_returns_empty_payload_at_budget_cap(llm_settings, monkeypatch):
+    """At the cap, hand back {} so the caller groups by method family, not None (no report)."""
+    settings = replace(llm_settings, llm_report_synthesis_max_tokens=llm.REPORT_SYNTHESIS_TOKEN_CAP)
+    calls: list[int] = []
+
+    def always_truncated(settings, *, system, user, max_tokens=2048, temperature=0.2, timeout=None):
+        calls.append(max_tokens)
+        raise llm.LLMTruncated("输出达到 max_tokens 上限")
+
+    monkeypatch.setattr(llm, "chat_json", always_truncated)
+    notes: list[str] = []
+
+    result = llm.synthesize_report(
+        settings, topic={"topic_name": "DeepSWE"}, papers=[_row(index) for index in range(20)], notes=notes
+    )
+
+    assert result == {}
+    assert calls == [llm.REPORT_SYNTHESIS_TOKEN_CAP]
+    assert notes and "确定性分组" in notes[0]

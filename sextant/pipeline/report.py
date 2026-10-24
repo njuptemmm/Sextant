@@ -1,4 +1,8 @@
-"""Stage 7: compile ranked evidence into a bilingual integrated report.
+"""Compile ranked evidence into a bilingual integrated report.
+
+The report is a user-triggered job (:func:`run_report`), not a retrieval
+pipeline stage: it costs several LLM calls and the catalog is already usable
+without it.
 
 The HTML renderer in :mod:`sextant.engine.render_html` is deliberately strict:
 it refuses to emit a report unless every card carries bilingual analysis and
@@ -12,6 +16,8 @@ report is still honest about which parts the model failed to write.
 
 from __future__ import annotations
 
+import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +26,8 @@ from sextant.engine.common import (
     OTHER_DIRECTION,
     contains_cjk,
     paper_cards_file,
+    queries_file,
+    read_json,
     report_content_en_file,
     report_content_zh_file,
     report_synthesis_input_file,
@@ -27,7 +35,10 @@ from sextant.engine.common import (
 )
 from sextant.engine.render_html import render_report
 from sextant.llm import analyze_report_papers, synthesize_report
-from sextant.workspace import now_iso
+from sextant.runlog import BUS, EventBus, RunLogger, new_run_id, utc_now_iso
+from sextant.workspace import load_topic, now_iso, read_ranked, topic_dir
+
+ProgressCallback = Callable[[str], None]
 
 SECTION_KEYS = (
     "research_question",
@@ -119,7 +130,7 @@ def _synthesis_texts(payload: dict[str, Any]) -> list[str]:
     return [_text(payload.get("executive_summary_zh")), *values, *theme_texts]
 
 
-def _section_fallbacks(topic: dict[str, Any], papers: list[dict[str, Any]]) -> dict[str, str]:
+def _section_fallbacks(topic: dict[str, Any]) -> dict[str, str]:
     topic_name = _text(topic.get("topic_name")) or "该主题"
     return {
         "research_question": (
@@ -171,13 +182,43 @@ def _fallback_theme(paper_ids: list[str]) -> dict[str, Any]:
     }
 
 
-def _normalize_subthemes(raw: Any, paper_ids: list[str], notes: list[str]) -> list[dict[str, Any]]:
+def _category_theme(category: str, paper_ids: list[str]) -> dict[str, Any]:
+    """A method-family group built without the model's help.
+
+    Used when the synthesis left papers unassigned (or never returned): the
+    analysis stage already labelled every card with a method category, so the
+    group is real evidence organisation, not a leftover bucket. The summary
+    stays an honest fallback rather than an invented review of the group.
+    """
+    return {
+        "title_zh": category,
+        "title_en": category,
+        "summary_zh": (
+            f"该方向按论文的方法类别「{category}」归并；模型未生成综合评述，"
+            "各文献的方法与结论请逐篇查看论文卡片。"
+        ),
+        "summary_en": (
+            "Papers are grouped here by their method category. A synthesized summary was not "
+            "generated; see each paper card for methods and findings."
+        ),
+        "paper_ids": paper_ids,
+    }
+
+
+def _normalize_subthemes(
+    raw: Any,
+    paper_ids: list[str],
+    notes: list[str],
+    categories: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
     """Turn model output into subthemes the renderer will accept.
 
     Unknown ids are dropped, duplicate assignments keep the first theme, and
     short summaries are replaced with an honest fallback instead of deleting
-    the group. Papers left over are collected into the "other" theme, because
-    the renderer rejects a report with unassigned cards.
+    the group. Papers the model left over are grouped by their method family
+    (falling back to "other" only when no category exists), because the
+    renderer rejects a report with unassigned cards — and one oversized
+    "other" bucket would hide exactly the papers the model failed to cover.
     """
     known = set(paper_ids)
     claimed: set[str] = set()
@@ -221,11 +262,41 @@ def _normalize_subthemes(raw: Any, paper_ids: list[str], notes: list[str]) -> li
 
     unassigned = [paper_id for paper_id in paper_ids if paper_id not in claimed]
     if unassigned:
-        notes.append(f"{len(unassigned)} 篇文献未归入任何子方向，已并入「{FALLBACK_THEME_TITLE}」")
-        themes.append(_fallback_theme(unassigned))
+        # Recover the leftovers by method family instead of dumping them into
+        # a single "other" theme. A truncated synthesis used to strand 15 of
+        # 20 papers there; the categories come from the analysis stage, so
+        # this costs no extra model call.
+        buckets: dict[str, list[str]] = {}
+        for paper_id in unassigned:
+            category = _text((categories or {}).get(paper_id))
+            if not contains_cjk(category) or category == OTHER_DIRECTION:
+                category = ""
+            buckets.setdefault(category, []).append(paper_id)
+        recovered = 0
+        for category, ids in buckets.items():
+            if not category:
+                continue
+            existing = next((theme for theme in themes if theme["title_zh"] == category), None)
+            if existing is not None:
+                existing["paper_ids"].extend(pid for pid in ids if pid not in existing["paper_ids"])
+            else:
+                themes.append(_category_theme(category, ids))
+            recovered += len(ids)
+        if recovered:
+            notes.append(f"{recovered} 篇文献未被模型分配子方向，已按方法家族自动归组")
+        leftover = buckets.get("", [])
+        if leftover:
+            notes.append(f"{len(leftover)} 篇文献缺少方法类别，已并入「{FALLBACK_THEME_TITLE}」")
+            themes.append(_fallback_theme(leftover))
     if not themes:
         themes.append(_fallback_theme(list(paper_ids)))
     return themes
+
+
+def _method_category(row: dict[str, Any], fields: dict[str, str]) -> str:
+    direction = _text(row.get("research_direction"))
+    model_category = _text(fields.get("method_category")) or direction
+    return model_category if contains_cjk(model_category) else (direction or OTHER_DIRECTION)
 
 
 def _build_card(row: dict[str, Any], rank: int, analysis: dict[str, dict[str, str]]) -> dict[str, Any]:
@@ -244,9 +315,7 @@ def _build_card(row: dict[str, Any], rank: int, analysis: dict[str, dict[str, st
             "The available abstract does not state a clear research or application impact; "
             "consult the original paper."
         )
-    direction = _text(row.get("research_direction"))
-    model_category = _text(fields.get("method_category")) or direction
-    method_category = model_category if contains_cjk(model_category) else (direction or OTHER_DIRECTION)
+    method_category = _method_category(row, fields)
     abstract_source = _text(row.get("abstract_source"))
     if abstract_source in {"", "unavailable"}:
         abstract_source = "source_metadata"
@@ -286,12 +355,14 @@ def build_report(
     ranked: list[dict[str, Any]],
     settings: Settings,
     notes: list[str] | None = None,
+    on_progress: ProgressCallback | None = None,
 ) -> Path | None:
     """Write the report inputs and render the integrated HTML.
 
     Returns the report path, or ``None`` when the report could not be produced.
     ``notes`` always explains why, so the run log never reduces a skipped
-    report to a bare count.
+    report to a bare count. ``on_progress`` receives short human-readable
+    updates for the long LLM phases.
     """
     notes = notes if notes is not None else []
     if not settings.report_enabled:
@@ -306,10 +377,21 @@ def build_report(
         notes.append(f"可用文献不足 {MIN_REPORT_PAPERS} 篇，跳过调研报告")
         return None
 
+    def progress(message: str) -> None:
+        if on_progress is not None:
+            on_progress(message)
+
     directions = [str(item) for item in (plan.get("directions") or []) if str(item).strip()]
+    progress(f"正在分析 {len(selected)} 篇文献")
     analysis = analyze_report_papers(
-        settings, topic=topic, papers=selected, notes=notes, directions=directions
+        settings,
+        topic=topic,
+        papers=selected,
+        notes=notes,
+        directions=directions,
+        on_progress=(lambda done, total: progress(f"文献分析 {done}/{total}")) if on_progress else None,
     )
+    progress("正在综合写作")
     synthesis = synthesize_report(
         settings, topic=topic, papers=selected, directions=directions, notes=notes
     )
@@ -324,6 +406,7 @@ def build_report(
     hits = _meta_hits(*_synthesis_texts(synthesis))
     if hits:
         notes.append(f"综合写作含流程元信息（{'、'.join(hits)}），已重试一次")
+        progress("检测到流程元信息，正在重写")
         retry = synthesize_report(
             settings,
             topic=topic,
@@ -339,11 +422,12 @@ def build_report(
                 notes.append(f"重试后仍含流程元信息（{'、'.join(remaining)}）")
 
     paper_ids = [_text(row.get("record_id")) for row in selected]
-    themes = _normalize_subthemes(synthesis.get("subthemes"), paper_ids, notes)
     cards = [
         _build_card(row, index, analysis)
         for index, row in enumerate(selected, start=1)
     ]
+    categories = {card["paper_id"]: card["method_category"] for card in cards}
+    themes = _normalize_subthemes(synthesis.get("subthemes"), paper_ids, notes, categories)
 
     topic_name = _text(topic.get("topic_name")) or "研究主题"
     title_zh = _text(synthesis.get("title_zh"))
@@ -363,7 +447,7 @@ def build_report(
         "was not generated, so refer to the sections and paper cards."
     )
 
-    sections_zh = _sections_zh(synthesis.get("sections_zh"), _section_fallbacks(topic, selected))
+    sections_zh = _sections_zh(synthesis.get("sections_zh"), _section_fallbacks(topic))
     sections_en = _sections_en(synthesis.get("sections_en"))
 
     write_json(paper_cards_file(root), {"title": title_zh, "papers": cards})
@@ -401,8 +485,154 @@ def build_report(
         },
     )
 
+    progress("正在渲染报告")
     try:
         return render_report(root)
     except SystemExit as exc:
         notes.append(f"报告校验未通过：{exc}")
         return None
+
+
+class ReportError(RuntimeError):
+    """Raised when a report job cannot even be started."""
+
+
+def run_report(
+    settings: Settings,
+    topic_id: str,
+    *,
+    run_id: str | None = None,
+    bus: EventBus | None = None,
+    on_event: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    """Generate the integrated report as an independent, user-triggered job.
+
+    The evidence catalog can exist for minutes or days before anyone asks for a
+    report, and a report costs several LLM calls. Running it inside the
+    retrieval pipeline made the console wait for it; here it gets its own
+    ``run_id``, its own JSONL log and its own SSE stream, so the catalog stays
+    usable while the report is written.
+
+    Report jobs are *not* appended to ``runs.json``: that file drives
+    ``last_run`` in the console and a report run must not masquerade as a new
+    retrieval. The job's state is discoverable through the job registry and its
+    log file.
+
+    Returns a summary dict with ``status`` either ``"completed"`` or
+    ``"failed"``. Only a missing topic raises.
+    """
+    root = topic_dir(settings, topic_id)
+    topic = load_topic(root)
+    if not topic:
+        raise ReportError(f"主题不存在：{topic_id}")
+
+    run_id = run_id or new_run_id()
+    logger = RunLogger(
+        topic_root=root,
+        run_id=run_id,
+        bus=bus or BUS,
+        topic_id=topic_id,
+        on_event=on_event,
+    )
+    started_at = utc_now_iso()
+    started = time.perf_counter()
+    logger.emit("run", "started", f"开始生成调研报告：{topic.get('topic_name')}", topic_id=topic_id, run_id=run_id)
+
+    ranked = read_ranked(root)
+    plan = read_json(queries_file(root), default={}) or {}
+    selected = [row for row in ranked if _text(row.get("record_id"))][: settings.report_max_papers]
+    notes: list[str] = []
+    target: Path | None = None
+    error = ""
+
+    if not settings.report_enabled:
+        error = "调研报告生成已关闭（SEXTANT_REPORT_ENABLED=0）"
+    elif not settings.llm_enabled:
+        error = "未配置模型，无法生成调研报告"
+    elif not ranked:
+        error = "尚无排序结果，请先完成一次检索"
+    elif len(selected) < MIN_REPORT_PAPERS:
+        error = f"可用文献不足 {MIN_REPORT_PAPERS} 篇，无法生成调研报告"
+
+    def elapsed() -> int:
+        return int((time.perf_counter() - started) * 1000)
+
+    if error:
+        logger.emit("report", "warning", error, reasons=[error])
+    else:
+        logger.emit(
+            "report",
+            "started",
+            f"正在分析 {len(selected)} 篇文献并综合写作",
+            model=settings.llm_model,
+            papers=len(selected),
+            directions=len(plan.get("directions") or []),
+        )
+        try:
+            target = build_report(
+                root,
+                topic=topic,
+                plan=plan,
+                ranked=selected,
+                settings=settings,
+                notes=notes,
+                on_progress=lambda message: logger.emit("report", "running", message),
+            )
+        except Exception as exc:  # noqa: BLE001 - the job must end with a terminal event
+            notes.append(f"{type(exc).__name__}: {exc}")
+            target = None
+        if target:
+            logger.emit(
+                "report",
+                "completed" if not notes else "warning",
+                f"调研报告已生成，共 {len(selected)} 篇文献",
+                duration_ms=elapsed(),
+                output=str(target),
+                notes=notes[:8],
+                size_bytes=target.stat().st_size if target.exists() else 0,
+            )
+        else:
+            error = notes[-1] if notes else "调研报告未生成"
+            logger.emit(
+                "report",
+                "warning",
+                "调研报告未生成",
+                duration_ms=elapsed(),
+                reasons=notes[:8] or ["未知原因"],
+            )
+
+    duration_ms = elapsed()
+    summary = {
+        "run_id": run_id,
+        "topic_id": topic_id,
+        "kind": "report",
+        "status": "completed" if target else "failed",
+        "started_at": started_at,
+        "finished_at": utc_now_iso(),
+        "duration_ms": duration_ms,
+        "papers": len(selected) if target else 0,
+        "report": str(target) if target else None,
+        "report_notes": notes[:8],
+        "error": None if target else (error or "调研报告未生成"),
+    }
+    if target:
+        logger.emit(
+            "run",
+            "completed",
+            f"调研报告已生成，共 {len(selected)} 篇文献",
+            duration_ms=duration_ms,
+            report=str(target),
+            papers=len(selected),
+            notes=notes[:8],
+        )
+    else:
+        logger.emit(
+            "run",
+            "failed",
+            summary["error"],
+            duration_ms=duration_ms,
+            error_type="ReportError",
+            hint="检查模型配置与网络；修正后点击「重试生成」即可，已生成的历史报告会保留。",
+            reasons=notes[:8],
+        )
+    return summary

@@ -127,6 +127,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         summary["runs"] = list(reversed(read_runs(root)))[:10]
         active = REGISTRY.active_for(topic_id)
         summary["active_job"] = active.as_dict() if active else None
+        report_job = REGISTRY.active_for(topic_id, "report")
+        summary["active_report"] = report_job.as_dict() if report_job else None
         return summary
 
     @app.post("/api/topics/{topic_id}/rerun", status_code=202)
@@ -168,8 +170,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         _require_topic(root, topic_id)
         target = report_path(root)
         if not target.exists():
-            raise HTTPException(status_code=404, detail="调研报告尚未生成；需要配置模型后重新运行一次")
+            raise HTTPException(status_code=404, detail="调研报告尚未生成；可在主题页点击「生成调研报告」")
         return FileResponse(target, media_type="text/html; charset=utf-8")
+
+    @app.post("/api/topics/{topic_id}/report", status_code=202)
+    def generate_report(topic_id: str) -> dict[str, Any]:
+        """Start the expensive, optional report as its own job.
+
+        The catalog is already usable, so this is a user decision rather than
+        a pipeline stage; the returned run_id streams progress independently
+        of the retrieval run.
+        """
+        root = _root(settings, topic_id)
+        _require_topic(root, topic_id)
+        if not settings.report_enabled:
+            raise HTTPException(status_code=400, detail="调研报告生成已关闭（SEXTANT_REPORT_ENABLED=0）")
+        if not settings.llm_enabled:
+            raise HTTPException(status_code=400, detail="未配置模型，无法生成调研报告")
+        if not catalog_path(root).exists():
+            raise HTTPException(status_code=400, detail="证据目录尚未生成，请先完成一次检索")
+        from sextant.api.jobs import REGISTRY, JobConflict
+
+        try:
+            job = REGISTRY.start_report(settings, topic_id)
+        except JobConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"job": job.as_dict()}
 
     @app.get("/api/topics/{topic_id}/events")
     def events(topic_id: str, run_id: str | None = None) -> StreamingResponse:

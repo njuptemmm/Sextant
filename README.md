@@ -1,6 +1,6 @@
 # Sextant · 六分仪
 
-> 输入一个研究主题，自动完成「查询规划 → 多源检索 → 去重归一 → 相关性排序 → 生成可筛选证据目录」，全过程可观察、可追溯、可重跑。
+> 输入一个研究主题，自动完成「查询规划 → 多源检索 → 去重归一 → 相关性排序 → 生成可筛选证据目录」，并可随时一键生成中英双语调研报告；全过程可观察、可追溯、可重跑。
 
 Sextant 面向需要**持续跟踪某个研究方向**的人：研究生、研发工程师、技术选型负责人。它的产物不是一段聊天回复，而是一份能直接用于组会、立项或选型讨论的**证据目录**——每条记录都带来源、发表日期、引用数、摘要和排序理由。
 
@@ -69,11 +69,11 @@ SEXTANT_LLM_MODEL=deepseek-chat
 ## 3. 现场演示路径（约 3 分钟）
 
 1. 打开控制台，输入主题 `LLM agent evaluation`，关键词 `LLM agent, evaluation, benchmark`，点击「开始检索」。
-2. 观察七段式时间线实时推进：查询规划 → 多源检索 → 去重归一 → 中文增强 → 相关性排序 → 目录生成 → 调研报告。每一步都显示耗时与条数。
+2. 观察六段式时间线实时推进：查询规划 → 多源检索 → 去重归一 → 中文增强 → 相关性排序 → 目录生成。每一步都显示耗时与条数；目录生成后本次检索立即结束。
 3. 点击「打开目录」：按研究方向分组，支持来源 / 年份 / 类型筛选与中英摘要切换。
-4. 点击「调研报告」：基于 Top 20 证据生成中英双语综合报告，含执行摘要、六个分析小节与按方法家族聚合的论文卡片。
-5. 回到控制台点「重跑」：展示同一主题的第二次运行，说明状态如何复用工作区、日志如何按 run 隔离。
-6. 用 MCP 客户端调用 `run_topic`，展示同一能力脱离 Web 界面也能被 Agent 使用。
+4. 在目录卡片下方点击「生成调研报告」：报告是一个独立任务，有自己的 run_id、日志和 SSE 进度，基于 Top 20 证据生成中英双语综合报告（执行摘要、六个分析小节、按方法家族聚合的论文卡片）。生成期间目录始终可用，完成后按钮变为「打开调研报告」。
+5. 回到控制台点「重跑」：展示同一主题的第二次运行，说明状态如何复用工作区、日志如何按 run 隔离；重跑会作废旧报告。
+6. 用 MCP 客户端调用 `run_topic` 生成证据目录，再调用 `generate_report` 启动报告任务，展示同一能力脱离 Web 界面也能被 Agent 使用。
 
 ---
 
@@ -93,6 +93,9 @@ flowchart LR
     subgraph Core["Pipeline"]
         P1[plan] --> P2[retrieve] --> P3[normalize] --> P4[enrich] --> P5[rank] --> P6[render]
     end
+    subgraph Report["On-demand job"]
+        RP[report]
+    end
     subgraph Data["工作区（磁盘）"]
         D1[topic.json / queries.json]
         D2[raw/*.jsonl]
@@ -106,11 +109,15 @@ flowchart LR
     W --> R
     A --> M[MCP Server]
     R --> J --> Core
+    W -. "生成调研报告" .-> J --> Report
     Core --> O
     P4 --> L
+    Report --> L
     Core --> Data
+    Report --> Data
     J --> S --> W
     M --> Core
+    M --> Report
 ```
 
 **分层与依赖方向**：`web → api → pipeline → engine`。`engine` 是可移植的检索与渲染内核（纯函数为主，可单独测试）；`pipeline` 只做编排；`api` 只做协议与校验。详细取舍见 [docs/architecture.md](docs/architecture.md)。
@@ -133,8 +140,9 @@ flowchart LR
 | enrich | 可用记录 | 可选：中文标题、中文摘要、一句话结论、研究方向 | 记录字段 | 模型超时或返回非法 JSON 时整体降级 |
 | rank | 记录 + 主题 | 关键词 40 + 标题命中 10 + 引用 20 + 时效 20 + 跨源 5 + 质量 5 | `03_processed/ranked_articles.jsonl` | 纯函数，无外部依赖 |
 | render | 排序结果 | 分组、筛选、中英对照，写入自包含 HTML | `output/catalog.html` | 中文质量门控失败时降级渲染并告警 |
+| report（独立任务） | 排序结果 + 查询计划 | 用户点击后启动：批量提炼研究影响 + 综合写作 + 渲染 | `04_summary/*.json`、`output/综合调研报告：*.html` | 未配置模型、可用文献不足或校验失败时返回失败事件并保留旧报告 |
 
-每一步都会向 `logs/<run_id>.jsonl` 追加一条结构化事件，同时推送到 SSE。完整链路说明见 [docs/agent-flow.md](docs/agent-flow.md)。
+前六段串行构成一次检索，每一段都会向 `logs/<run_id>.jsonl` 追加结构化事件并推送到 SSE。报告不是第 7 段：它有自己的任务、日志和 SSE 流，证据目录生成后立即可用。完整链路说明见 [docs/agent-flow.md](docs/agent-flow.md)。
 
 ---
 
@@ -147,7 +155,8 @@ MCP 服务使用 Streamable HTTP，地址 `http://<host>:8001/mcp`。
 | `list_sources` | 列出可用来源、学科与权威等级 |
 | `search_papers` | 单源快速检索，不写工作区 |
 | `create_topic` | 创建主题并异步启动运行，立即返回 `run_id` |
-| `run_topic` | 阻塞式跑完整链路，返回目录路径与统计 |
+| `run_topic` | 阻塞式跑检索链路，返回目录路径与统计 |
+| `generate_report` | 为已有目录的主题启动报告任务，立即返回 `run_id` |
 | `get_topic` | 读取主题信息与排名靠前的记录 |
 | `get_run_status` | 查询异步运行状态 |
 | `score_records` | 对已有记录按主题打分，不落盘 |
@@ -181,7 +190,9 @@ MCP 服务使用 Streamable HTTP，地址 `http://<host>:8001/mcp`。
 | POST | `/api/topics/{id}/rerun` | 重跑 |
 | GET | `/api/topics/{id}/records` | 分页读取排序结果 |
 | GET | `/api/topics/{id}/catalog` | 目录 HTML |
-| GET | `/api/topics/{id}/events?run_id=` | SSE 事件流 |
+| POST | `/api/topics/{id}/report` | 启动独立报告任务（202） |
+| GET | `/api/topics/{id}/report` | 报告 HTML |
+| GET | `/api/topics/{id}/events?run_id=` | SSE 事件流（检索与报告各自独立） |
 | GET | `/api/topics/{id}/logs/{run_id}` | 原始 JSONL 日志 |
 | GET | `/api/runs/{run_id}` | 运行状态 |
 
@@ -201,6 +212,10 @@ MCP 服务使用 Streamable HTTP，地址 `http://<host>:8001/mcp`。
 | `SEXTANT_LLM_BASE_URL` | 空 | OpenAI 兼容接口根地址 |
 | `SEXTANT_LLM_API_KEY` | 空 | 模型密钥，**只从环境变量读取** |
 | `SEXTANT_LLM_MODEL` | 空 | 模型名 |
+| `SEXTANT_REPORT_ENABLED` | `1` | 是否允许按需生成调研报告（`0` 关闭入口） |
+| `SEXTANT_REPORT_MAX_PAPERS` | `20` | 进入报告的 Top-N 文献数 |
+| `SEXTANT_LLM_REPORT_BATCH_SIZE` | `5` | 报告分析每批文献数 |
+| `SEXTANT_LLM_REPORT_TIMEOUT` | `180` | 单次报告调用超时（秒） |
 | `SEMANTIC_SCHOLAR_API_KEY` | 空 | 配置后自动启用 Semantic Scholar |
 
 ---
@@ -230,6 +245,7 @@ pytest
 - API 健康检查、主题列表、错误码
 - 目录渲染（含无模型时的降级路径）
 - LLM 增强的分批、单批失败隔离与伪造 `record_id` 过滤
+- 报告任务的独立事件流、失败终态、并发互斥与不改写 `runs.json`
 
 ---
 

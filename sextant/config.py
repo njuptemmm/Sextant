@@ -85,8 +85,10 @@ class Settings:
     #: Completion budget for one report-analysis batch, reasoning included.
     llm_report_max_tokens: int = 8000
     #: Completion budget for the single synthesis call. It writes the executive
-    #: summary, six bilingual sections and the subtheme grouping at once.
-    llm_report_synthesis_max_tokens: int = 8000
+    #: summary, six bilingual sections and the subtheme grouping at once, and on
+    #: a reasoning model the chain of thought is billed here too. 8 000 was
+    #: exhausted by reasoning alone in a real run; 16 000 fits both.
+    llm_report_synthesis_max_tokens: int = 16000
     #: A synthesis call is long; the default 45s request timeout is too short.
     llm_report_timeout_seconds: float = 180.0
     #: How many top-ranked papers enter the integrated report.
@@ -133,7 +135,7 @@ def get_settings() -> Settings:
         llm_plan_max_tokens=_env_int("SEXTANT_LLM_PLAN_MAX_TOKENS", 2000),
         llm_report_batch_size=_env_int("SEXTANT_LLM_REPORT_BATCH_SIZE", 5),
         llm_report_max_tokens=_env_int("SEXTANT_LLM_REPORT_MAX_TOKENS", 8000),
-        llm_report_synthesis_max_tokens=_env_int("SEXTANT_LLM_REPORT_SYNTHESIS_MAX_TOKENS", 8000),
+        llm_report_synthesis_max_tokens=_env_int("SEXTANT_LLM_REPORT_SYNTHESIS_MAX_TOKENS", 16000),
         llm_report_timeout_seconds=_env_float("SEXTANT_LLM_REPORT_TIMEOUT", 180.0),
         report_max_papers=_env_int("SEXTANT_REPORT_MAX_PAPERS", 20),
         report_enabled=_env_bool("SEXTANT_REPORT_ENABLED", True),

@@ -31,17 +31,40 @@ sequenceDiagram
     L-->>P: 标题 / 摘要 / 方向
     P->>W: ranked_articles.jsonl
     P->>W: catalog.html
-    P->>L: 调研报告（分批卡片 + 综合写作，可选）
-    L-->>P: 双语卡片与报告内容
-    P->>W: 04_summary/*.json + output/综合调研报告：[主题].html
     P->>E: run.completed
     U->>API: GET /events
     API-->>U: 历史 + 实时事件
 ```
 
+调研报告是**独立任务**，不在上面这条链路里：目录生成后，用户或 Agent 单独触发它，避免控制台为一次可选、昂贵的调用等待一两分钟。
+
+```mermaid
+sequenceDiagram
+    participant U as 用户 / Agent
+    participant API as FastAPI
+    participant J as JobRegistry
+    participant R as run_report
+    participant L as LLM
+    participant W as 工作区
+    participant E as SSE
+
+    U->>API: POST /api/topics/{id}/report
+    API->>J: start_report(topic_id)
+    J-->>API: run_id（202）
+    J->>R: run_report()
+    R->>W: 读取 ranked_articles.jsonl + queries.json
+    R->>L: 分批卡片分析
+    L-->>R: 双语卡片
+    R->>L: 综合写作
+    L-->>R: 执行摘要 / 小节 / 子方向
+    R->>W: 04_summary/*.json + output/综合调研报告：[主题].html
+    R->>E: report.* 事件（独立 run_id）
+    U->>API: GET /events?run_id=<报告 run_id>
+```
+
 ## 2. 阶段契约
 
-每个阶段都有明确的输入、输出和失败语义。阶段之间只通过工作区文件或内存中的记录列表传递数据。
+每个阶段都有明确的输入、输出和失败语义。阶段之间只通过工作区文件或内存中的记录列表传递数据。检索链路有六个阶段；调研报告是链路之外的独立任务，契约单独放在 2.7。
 
 ### 2.1 plan — 查询规划
 
@@ -124,21 +147,30 @@ Prompt 明确禁止编造原文没有的结论；返回的 `record_id` 必须命
 
 产物是自包含 HTML：无外部 JS/CSS 依赖，按研究方向分组，支持搜索、来源/年份/类型筛选和中英对照。
 
-### 2.7 report — 中英双语调研报告（可选，需 LLM）
+### 2.7 report — 中英双语调研报告（独立任务，需 LLM）
+
+报告不进入检索 pipeline：它昂贵（多次模型调用）且可选，因此由用户或 Agent 单独触发，拥有自己的 `run_id`、日志和 SSE 流。检索运行结束即释放控制台，目录先可用。
 
 | | |
 |---|---|
-| 输入 | `ranked_articles.jsonl` 的前 N 篇（`SEXTANT_REPORT_MAX_PAPERS`，默认 20）+ `queries.json` 中的方向 |
+| 触发 | `POST /api/topics/{id}/report` 或 MCP `generate_report`；同一主题同一时刻只允许一个任务（检索或报告） |
+| 输入 | 工作区已有的 `ranked_articles.jsonl` 前 N 篇（`SEXTANT_REPORT_MAX_PAPERS`，默认 20）+ `queries.json` 中的方向 |
 | 中间产物 | `04_summary/paper_cards.json`、`report_content_zh.json`、`report_content_en.json` |
 | 输出 | `output/综合调研报告：<主题>.html` |
-| 失败语义 | 未配置模型、文献不足 3 篇或综合写作失败时跳过并记 `warning`；**不影响已生成的目录**。本次未生成报告时删除上一次的报告，避免报告描述旧数据集 |
+| 失败语义 | 未配置模型、目录不存在、文献不足 3 篇或综合写作失败时任务以 `failed` 结束并给出原因；**不影响已生成的目录**，旧报告保持可打开 |
+
+报告任务不写入 `runs.json`：那份文件驱动控制台的「最近一次运行」，报告不能伪装成一次新的检索。任务状态通过 job registry、`GET /api/runs/{run_id}` 和独立的 JSONL 日志查看。
+
+检索运行会删除上一次的报告：排序结果已被替换，旧报告描述的证据集不再存在，继续展示会误导用户。
 
 报告分两次模型调用完成：
 
 1. **逐篇分析**：每 5 篇一批，输出 `abstract_only` 卡片所需字段——摘要、研究与应用影响、方法分类，中英双语。
 2. **综合写作**：一次调用产出执行摘要、六个分析维度（研究问题 / 方法 / 样本 / 结果 / 局限 / 应用影响）和 3–6 个按方法家族聚类的子主题。
 
-结构修复规则：未知 `record_id` 被丢弃，未被任何子主题认领的论文自动并入「其他相关研究」，过短或缺失的小节用不涉及流程的降级文案补齐。若模型写出「本报告依据 N 篇论文摘要」「本次检索」这类**流程元信息**，带纠正指令重试一次；仍失败则记入 `report_notes`，不做静默放行。渲染器对双语完整性做严格校验，缺字段时拒绝渲染并降级为跳过。
+结构修复规则：未知 `record_id` 被丢弃，过短或缺失的小节用不涉及流程的降级文案补齐。**未被模型认领的论文按分析阶段已有的方法类别自动归组**（与现有子方向同名则并入），只有缺少方法类别的论文才进入「其他相关研究」——不会再出现十几篇论文堆在一个「其他」里的情况，且这一步不额外调用模型。若模型写出「本报告依据 N 篇论文摘要」「本次检索」这类**流程元信息**，带纠正指令重试一次；仍失败则记入 `report_notes`，不做静默放行。渲染器对双语完整性做严格校验，缺字段时拒绝渲染，报告任务以 `failed` 结束。
+
+综合写作被截断时**提升 `max_tokens` 重试（16000 → 32000 → 64000），论文集保持不变**：截断源于推理 token 而非论文数量，减半论文实测无效且会把被砍掉的论文挤出综合。达到上限仍截断时返回空综合，报告层改用上述确定性方法家族分组，执行摘要与小节使用降级文案，**全部文献仍保留在报告中**，`report_notes` 记录截断与降级原因。只有网络错误、JSON 结构不合法这类「模型没给出任何可用内容」的情况，才不生成报告。
 
 ## 3. 上下文与状态管理
 
@@ -152,7 +184,7 @@ Prompt 明确禁止编造原文没有的结论；返回的 `record_id` 必须命
 | 归一结果 | `03_processed/*.jsonl` | 跨运行 | normalize、rank | render、report、API |
 | 报告中间产物 | `04_summary/*.json` | 跨运行 | report | render、审计 |
 | 交付物 | `output/catalog.html`、`output/综合调研报告：*.html` | 跨运行 | render、report | 用户 |
-| 事件流 | `logs/<run_id>.jsonl` | 跨运行 | runner | SSE、审计 |
+| 事件流 | `logs/<run_id>.jsonl` | 跨运行 | runner、run_report | SSE、审计 |
 | 运行历史 | `runs.json` | 跨运行 | runner / jobs | API、控制台 |
 
 这样设计的原因：
@@ -172,7 +204,10 @@ Prompt 明确禁止编造原文没有的结论；返回的 `record_id` 必须命
 | 模型返回非法 JSON | 丢弃增强结果，继续 | 同上 |
 | 中文校验不通过 | 降级渲染并告警 | 目录仍可用，日志有 `chinese_gate` |
 | 报告写作出现流程元信息 | 带纠正指令重试一次，仍失败则记录原因 | 报告仍可打开，`report_notes` 说明降级点 |
-| 报告字段不完整 | 自动补降级文案；渲染器仍拒绝时跳过报告 | 目录不受影响，「调研报告」阶段显示黄色警告 |
+| 综合写作被截断 | 预算翻倍重试（上限 64000），论文集不变；到顶仍失败则按方法家族确定性归组 | 报告仍含全部文献，`report_notes` 记录截断与降级 |
+| 报告字段不完整 | 自动补降级文案；渲染器仍拒绝时任务失败 | 目录不受影响，报告卡片显示失败原因 |
+| 报告任务失败 | 旧报告保留，任务状态 `failed` | 报告卡片显示原因与「重新生成」 |
+| 检索与报告同时触发 | `JobConflict`，拒绝后启动的任务 | 409 + 当前占用任务 id |
 | 进程重启 | 内存任务丢失，磁盘结果保留 | 主题列表仍能打开已有目录；未完成运行被标记为中断 |
 
 人工介入点：失败后用户可以选择「重跑」、修改关键词新建主题，或直接查看 `logs/<run_id>.jsonl` 定位阶段。
@@ -182,9 +217,10 @@ Prompt 明确禁止编造原文没有的结论；返回的 `record_id` 必须命
 MCP 暴露的是同一套 pipeline，而不是另一套实现：
 
 - `create_topic` 适合需要异步推进的 Agent：拿到 `run_id` 后轮询 `get_run_status`。
-- `run_topic` 适合一次性任务：阻塞直到目录生成，直接拿到路径、统计；配置了模型时同时返回 `report` 路径与 `report_notes`（说明报告失败或降级的原因）。
+- `run_topic` 适合一次性任务：阻塞直到目录生成，直接拿到路径与统计，并用 `report_hint` 提示下一步；它**不生成报告**，所以调用方不必为可选步骤等待。
+- `generate_report` 在目录就绪后异步启动报告任务，返回 `run_id` 与 `status_url`，进度通过 `get_run_status` 查询。报告失败不会影响已有目录。
 - `search_papers` / `score_records` 适合自定义循环：Agent 自己决定检索式和排序策略，只复用归一化与评分函数。
 
-报告本身不额外暴露工具：它属于 `run_topic` 的产物，`report_notes` 为空表示报告完整生成，非空则表示跳过了哪一步以及为什么。Agent 若只想要目录，可以忽略报告字段；若只要报告，可以读 `04_summary/` 下的中间产物判断写作质量。
+这样拆分的理由是成本与失败边界：检索是廉价、必经、可重跑的；报告是昂贵、可选、依赖模型的。把两者放进同一次调用，会让 Agent 的超时预算和用户控制台的等待时间都由最慢的可选步骤决定。
 
 工具描述里写明了推荐链路，减少 Agent 的试错成本。

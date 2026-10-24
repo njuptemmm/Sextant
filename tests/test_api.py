@@ -1,8 +1,13 @@
 from __future__ import annotations
 
-import pytest
+from dataclasses import replace
 
-from sextant.api.jobs import Job, JobRegistry
+import pytest
+from fastapi.testclient import TestClient
+
+from sextant.api.app import create_app
+from sextant.api.jobs import Job, JobConflict, JobRegistry
+from sextant.workspace import catalog_path, topic_dir
 
 
 @pytest.fixture()
@@ -131,3 +136,85 @@ def test_events_unknown_run_returns_404(client, no_network):
     client.post("/api/topics", json={"name": "Unknown Run"})
     response = client.get("/api/topics/unknown-run/events?run_id=missing-run")
     assert response.status_code == 404
+
+
+def _llm_client(settings) -> TestClient:
+    llm_settings = replace(
+        settings,
+        llm_base_url="https://example.invalid/v1",
+        llm_api_key="test",
+        llm_model="test-model",
+    )
+    return TestClient(create_app(llm_settings))
+
+
+def test_report_generation_requires_llm(client, no_network):
+    client.post("/api/topics", json={"name": "No Model"})
+    response = client.post("/api/topics/no-model/report")
+    assert response.status_code == 400
+    assert "未配置模型" in response.json()["detail"]
+
+
+def test_report_generation_requires_catalog(settings, no_network):
+    client = _llm_client(settings)
+    client.post("/api/topics", json={"name": "No Catalog"})
+    response = client.post("/api/topics/no-catalog/report")
+    assert response.status_code == 400
+    assert "证据目录" in response.json()["detail"]
+
+
+def test_report_generation_starts_independent_job(settings, monkeypatch, no_network):
+    client = _llm_client(settings)
+    client.post("/api/topics", json={"name": "Has Catalog"})
+    root = topic_dir(settings, "has-catalog")
+    catalog = catalog_path(root)
+    catalog.parent.mkdir(parents=True, exist_ok=True)
+    catalog.write_text("<html>catalog</html>", encoding="utf-8")
+    monkeypatch.setattr(
+        JobRegistry,
+        "start_report",
+        lambda self, settings, topic_id: Job(run_id="report-test", topic_id=topic_id, kind="report"),
+    )
+
+    response = client.post("/api/topics/has-catalog/report")
+
+    assert response.status_code == 202
+    assert response.json()["job"]["kind"] == "report"
+    assert response.json()["job"]["run_id"] == "report-test"
+
+
+def test_report_generation_returns_conflict(settings, monkeypatch, no_network):
+    client = _llm_client(settings)
+    client.post("/api/topics", json={"name": "Busy Topic"})
+    root = topic_dir(settings, "busy-topic")
+    catalog = catalog_path(root)
+    catalog.parent.mkdir(parents=True, exist_ok=True)
+    catalog.write_text("<html>catalog</html>", encoding="utf-8")
+
+    def conflict(self, settings, topic_id):
+        raise JobConflict(f"主题 {topic_id} 已有运行中的检索任务：run-x")
+
+    monkeypatch.setattr(JobRegistry, "start_report", conflict)
+
+    response = client.post("/api/topics/busy-topic/report")
+
+    assert response.status_code == 409
+    assert "检索任务" in response.json()["detail"]
+
+
+def test_report_job_conflicts_with_running_pipeline(settings):
+    registry = JobRegistry()
+    registry._jobs["p1"] = Job(run_id="p1", topic_id="t", kind="pipeline", status="running")
+    registry._active[("t", "pipeline")] = "p1"
+
+    with pytest.raises(JobConflict):
+        registry.start_report(settings, "t")
+
+
+def test_pipeline_conflicts_with_running_report(settings):
+    registry = JobRegistry()
+    registry._jobs["r1"] = Job(run_id="r1", topic_id="t", kind="report", status="running")
+    registry._active[("t", "report")] = "r1"
+
+    with pytest.raises(JobConflict):
+        registry.start(settings, "t")

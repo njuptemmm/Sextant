@@ -12,11 +12,11 @@
 - 心跳：15 秒无事件时发送 `: ping` 注释行，避免代理断开空闲连接。
 - 终止：收到 `stage=run, status=completed|failed` 后服务端关闭流，前端同时停止重连。
 
-控制台据此渲染七段式阶段条与事件时间线（`report` 在中英双语调研报告阶段出现）。
+控制台据此渲染六段式阶段条与事件时间线。调研报告是独立任务：点击「生成调研报告」后，前端用报告自己的 `run_id` 再开一条 SSE 流，事件只更新报告卡片，不会混入检索时间线。
 
 ## 2. 结构化日志
 
-位置：`workspace/<topic_id>/logs/<run_id>.jsonl`，一行一个事件。
+位置：`workspace/<topic_id>/logs/<run_id>.jsonl`，一行一个事件。检索与报告各有自己的 `run_id` 与文件，互不覆盖。
 
 ### 事件 Schema
 
@@ -26,8 +26,8 @@
 | `ts` | ISO8601 | UTC 毫秒时间 |
 | `run_id` | str | 运行标识 |
 | `topic_id` | str | 主题标识 |
-| `stage` | str | `plan` / `retrieve` / `normalize` / `enrich` / `rank` / `render` / `run` |
-| `status` | str | `started` / `completed` / `warning` / `skipped` / `failed` |
+| `stage` | str | `plan` / `retrieve` / `normalize` / `enrich` / `rank` / `render` / `report` / `run` |
+| `status` | str | `started` / `running` / `completed` / `warning` / `skipped` / `failed` |
 | `message` | str | 面向人的一句话 |
 | `duration_ms` | int? | 阶段或单次调用耗时 |
 | `data` | object? | 阶段特定字段（见下表） |
@@ -43,7 +43,12 @@
 | `enrich` | `enriched`、`model` |
 | `rank` | `records`、`top_score`、`directions` |
 | `render` | `output`、`size_bytes`、`strict_chinese` |
-| `run`（完成） | `records`、`pending`、`enriched`、`stage_duration_ms` |
+| `report`（开始） | `model`、`papers`、`directions` |
+| `report`（进度） | 当前阶段的中文说明（文献分析批次、综合写作、渲染） |
+| `report`（完成） | `output`、`size_bytes`、`notes` |
+| `report`（未生成） | `reasons` |
+| `run`（检索完成） | `records`、`pending`、`enriched`、`stage_duration_ms` |
+| `run`（报告完成） | `report`、`papers`、`notes` |
 | `run`（失败） | `error_type`、`hint`、`stage_duration_ms` |
 
 ### 常用排查命令
@@ -122,6 +127,7 @@ Docker 的 `HEALTHCHECK` 每 30 秒调用一次，容器状态可以直接作为
 {
   "run_id": "20261024183000-a1b2c3",
   "topic_id": "llm-agent-evaluation",
+  "kind": "pipeline",
   "status": "completed",
   "stage": "done",
   "started_at": "2026-10-24T18:30:14+00:00",
@@ -129,9 +135,12 @@ Docker 的 `HEALTHCHECK` 每 30 秒调用一次，容器状态可以直接作为
   "error": null,
   "hint": null,
   "records": 96,
+  "papers": 0,
   "events": 31
 }
 ```
+
+报告任务的 `kind` 为 `report`，`papers` 是纳入报告的文献数。报告任务**不写入** `runs.json`，因此不会出现在主题的 `last_run` 里；它的状态通过任务注册表、`logs/<report_run_id>.jsonl` 和主题详情里的 `active_report` 查看。
 
 进程重启后内存状态丢失，但磁盘上的 `runs.json` 与日志仍在，历史运行仍可审计。
 

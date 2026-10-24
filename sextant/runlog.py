@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import queue
 import threading
+import uuid
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -21,6 +22,11 @@ TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
 
 def utc_now_iso() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds")
+
+
+def new_run_id() -> str:
+    """Sortable, unique run id shared by pipeline and on-demand report jobs."""
+    return f"{utc_now_iso()[:19].replace(':', '').replace('-', '')}-{uuid.uuid4().hex[:6]}"
 
 
 def _topic_key(topic_id: str) -> str:

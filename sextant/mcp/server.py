@@ -31,7 +31,9 @@ INSTRUCTIONS = (
     "Sextant 是研究情报追踪服务。它从 OpenAlex、arXiv、Crossref、DOAJ 等学术源检索，"
     "去重、按主题相关性打分，并生成可筛选的 HTML 证据目录。"
     "典型链路：先 list_sources 了解可用来源；用 search_papers 做一次快速验证；"
-    "确认主题后用 run_topic 跑完整链路；再用 get_topic 读取排名靠前的记录。"
+    "确认主题后用 run_topic 跑检索并生成证据目录；再用 get_topic 读取排名靠前的记录。"
+    "证据目录可用后，用 generate_report 启动中英双语调研报告任务；报告依赖模型且耗时较长，"
+    "因此不包含在 run_topic 中。"
 )
 
 
@@ -139,7 +141,7 @@ def create_server(host: str = "127.0.0.1", port: int = 8001):
             return {"ok": False, "error": str(exc), "topic": topic}
         return {"ok": True, "topic": topic, "run_id": job.run_id, "status_url": f"/api/runs/{job.run_id}"}
 
-    @server.tool(name="run_topic", description="Create (or reuse) a topic and run the full plan→retrieve→rank→render→report pipeline, blocking until the catalog and (when an LLM is configured) the bilingual report are ready.", structured_output=True)
+    @server.tool(name="run_topic", description="Create (or reuse) a topic and run the plan→retrieve→normalize→enrich→rank→render pipeline, blocking until the evidence catalog is ready. The integrated report is a separate generate_report job.", structured_output=True)
     def run_topic(
         name: str,
         keywords: list[str] | None = None,
@@ -179,9 +181,29 @@ def create_server(host: str = "127.0.0.1", port: int = 8001):
             "pending": summary["pending"],
             "duration_ms": summary["duration_ms"],
             "catalog": summary["catalog"],
-            "report": summary.get("report"),
-            "report_notes": summary.get("report_notes") or [],
+            "report_hint": "证据目录已可用；如需中英双语调研报告，调用 generate_report。",
         }
+
+    @server.tool(name="generate_report", description="Start the optional bilingual integrated report for a topic whose evidence catalog already exists. Returns a run_id immediately; poll it with get_run_status.", structured_output=True)
+    def generate_report(topic_id: str) -> dict[str, Any]:
+        settings = get_settings()
+        if not settings.report_enabled:
+            return {"ok": False, "error": "调研报告生成已关闭（SEXTANT_REPORT_ENABLED=0）"}
+        if not settings.llm_enabled:
+            return {"ok": False, "error": "未配置模型，无法生成调研报告"}
+        try:
+            summary = topic_summary(settings, topic_id)
+        except (KeyError, WorkspaceError):
+            return {"ok": False, "error": f"主题不存在：{topic_id}"}
+        if not summary.get("catalog_exists"):
+            return {"ok": False, "error": "证据目录尚未生成，请先运行 run_topic"}
+        from sextant.api.jobs import REGISTRY, JobConflict
+
+        try:
+            job = REGISTRY.start_report(settings, topic_id)
+        except JobConflict as exc:
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True, "run_id": job.run_id, "status_url": f"/api/runs/{job.run_id}"}
 
     @server.tool(name="get_topic", description="Read a topic's metadata and its top-ranked records.", structured_output=True)
     def get_topic(topic_id: str, limit: int = 10, min_score: float = 0.0) -> dict[str, Any]:
@@ -199,7 +221,7 @@ def create_server(host: str = "127.0.0.1", port: int = 8001):
             "records": [_record_brief(row) for row in rows[: max(1, min(limit, 100))]],
         }
 
-    @server.tool(name="get_run_status", description="Check a background run started by create_topic.", structured_output=True)
+    @server.tool(name="get_run_status", description="Check a background job started by create_topic or generate_report.", structured_output=True)
     def get_run_status(run_id: str) -> dict[str, Any]:
         from sextant.api.jobs import REGISTRY
 
