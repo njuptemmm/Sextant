@@ -19,6 +19,9 @@ services:
     restart: unless-stopped
 
   mcp:
+    # Build it too: relying on the api service's build to produce the image
+    # makes `docker compose up mcp` fail on a cold machine.
+    build: .
     image: sextant:0.1.0
     command: ["sextant-mcp", "--host", "0.0.0.0", "--port", "8001"]
     ports:
