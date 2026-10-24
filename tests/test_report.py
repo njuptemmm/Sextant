@@ -174,6 +174,29 @@ def test_build_report_writes_bilingual_content_and_renders(llm_settings, monkeyp
 
 def test_build_report_groups_unassigned_papers_by_method_family(llm_settings, monkeypatch):
     topic, root = _topic(llm_settings)
+    rows = [_row(1), _row(2), _row(3), _row(4)]
+    synthesis = _synthesis([row["record_id"] for row in rows])
+    synthesis["subthemes"] = synthesis["subthemes"][:1]  # papers 3 and 4 are left over
+    monkeypatch.setattr("sextant.pipeline.report.analyze_report_papers", lambda *a, **k: _analysis(rows))
+    monkeypatch.setattr("sextant.pipeline.report.synthesize_report", lambda *a, **k: synthesis)
+    notes: list[str] = []
+
+    target = build_report(
+        root, topic=topic, plan={}, ranked=rows, settings=llm_settings, notes=notes
+    )
+
+    assert target is not None
+    content_zh = read_json(report_content_zh_file(root), default={})
+    # The leftovers keep their method family instead of sinking into "other".
+    assert content_zh["subthemes"][-1]["title"] == "评测方法"
+    assert set(content_zh["subthemes"][-1]["paper_ids"]) == {rows[2]["record_id"], rows[3]["record_id"]}
+    assert any("按方法家族" in note for note in notes)
+    assert not any(theme["title"] == OTHER_DIRECTION for theme in content_zh["subthemes"])
+
+
+def test_build_report_folds_singleton_family_into_other(llm_settings, monkeypatch):
+    """One leftover paper is a per-paper direction, not a family worth its own section."""
+    topic, root = _topic(llm_settings)
     rows = [_row(1), _row(2), _row(3)]
     synthesis = _synthesis([row["record_id"] for row in rows])
     synthesis["subthemes"] = synthesis["subthemes"][:1]  # third paper is left over
@@ -187,11 +210,9 @@ def test_build_report_groups_unassigned_papers_by_method_family(llm_settings, mo
 
     assert target is not None
     content_zh = read_json(report_content_zh_file(root), default={})
-    # The leftover keeps its method family instead of sinking into "other".
-    assert content_zh["subthemes"][-1]["title"] == "评测方法"
+    assert content_zh["subthemes"][-1]["title"] == OTHER_DIRECTION
     assert rows[2]["record_id"] in content_zh["subthemes"][-1]["paper_ids"]
-    assert any("按方法家族" in note for note in notes)
-    assert not any(theme["title"] == OTHER_DIRECTION for theme in content_zh["subthemes"])
+    assert any("未能归入方法家族" in note for note in notes)
 
 
 def test_build_report_merges_leftovers_into_matching_theme(llm_settings, monkeypatch):
@@ -246,7 +267,7 @@ def test_build_report_uses_other_only_when_no_method_category(llm_settings, monk
     content_zh = read_json(report_content_zh_file(root), default={})
     assert content_zh["subthemes"][-1]["title"] == OTHER_DIRECTION
     assert rows[2]["record_id"] in content_zh["subthemes"][-1]["paper_ids"]
-    assert any("缺少方法类别" in note for note in notes)
+    assert any("未能归入方法家族" in note for note in notes)
 
 
 def test_build_report_keeps_every_paper_when_synthesis_returns_empty(llm_settings, monkeypatch):

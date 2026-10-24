@@ -52,6 +52,14 @@ SECTION_KEYS = (
 #: A report built from one or two papers is not a synthesis.
 MIN_REPORT_PAPERS = 3
 
+#: The report contract asks for 3–6 method families, so groups created without
+#: the model must respect the same ceiling.
+MAX_REPORT_THEMES = 6
+#: A one-paper "family" is usually a per-paper research direction (enrichment
+#: labels each paper individually), not a method family; such papers go to the
+#: "other" section rather than becoming a one-card section of their own.
+MIN_FALLBACK_GROUP_SIZE = 2
+
 FALLBACK_THEME_TITLE = OTHER_DIRECTION
 
 EN_SECTION_FALLBACKS = {
@@ -264,29 +272,44 @@ def _normalize_subthemes(
     if unassigned:
         # Recover the leftovers by method family instead of dumping them into
         # a single "other" theme. A truncated synthesis used to strand 15 of
-        # 20 papers there; the categories come from the analysis stage, so
-        # this costs no extra model call.
+        # 20 papers there; the categories come from the analysis stage (which
+        # snaps them to the planned directions), so this costs no extra call.
         buckets: dict[str, list[str]] = {}
         for paper_id in unassigned:
             category = _text((categories or {}).get(paper_id))
             if not contains_cjk(category) or category == OTHER_DIRECTION:
                 category = ""
             buckets.setdefault(category, []).append(paper_id)
+
+        leftover: list[str] = list(buckets.pop("", []))
         recovered = 0
-        for category, ids in buckets.items():
-            if not category:
+        new_groups: list[tuple[str, list[str]]] = []
+        # Largest families first keeps the choice deterministic once the cap
+        # below starts dropping groups.
+        for category, ids in sorted(buckets.items(), key=lambda item: len(item[1]), reverse=True):
+            if len(ids) < MIN_FALLBACK_GROUP_SIZE:
+                leftover.extend(ids)
                 continue
             existing = next((theme for theme in themes if theme["title_zh"] == category), None)
             if existing is not None:
                 existing["paper_ids"].extend(pid for pid in ids if pid not in existing["paper_ids"])
+                recovered += len(ids)
             else:
-                themes.append(_category_theme(category, ids))
+                new_groups.append((category, ids))
+
+        room = max(0, MAX_REPORT_THEMES - len(themes))
+        for category, ids in new_groups[:room]:
+            themes.append(_category_theme(category, ids))
             recovered += len(ids)
+        for _category, ids in new_groups[room:]:
+            leftover.extend(ids)
+
         if recovered:
             notes.append(f"{recovered} 篇文献未被模型分配子方向，已按方法家族自动归组")
-        leftover = buckets.get("", [])
         if leftover:
-            notes.append(f"{len(leftover)} 篇文献缺少方法类别，已并入「{FALLBACK_THEME_TITLE}」")
+            notes.append(
+                f"{len(leftover)} 篇文献未能归入方法家族，已并入「{FALLBACK_THEME_TITLE}」"
+            )
             themes.append(_fallback_theme(leftover))
     if not themes:
         themes.append(_fallback_theme(list(paper_ids)))
