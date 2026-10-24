@@ -60,6 +60,37 @@ def test_catalog_missing_returns_404(client, no_network):
     assert "尚未生成" in response.json()["detail"]
 
 
+def test_report_missing_returns_404(client, no_network):
+    client.post("/api/topics", json={"name": "No Report Yet"})
+    response = client.get("/api/topics/no-report-yet/report")
+    assert response.status_code == 404
+    assert "尚未生成" in response.json()["detail"]
+    detail = client.get("/api/topics/no-report-yet").json()
+    assert detail["report_exists"] is False
+    assert detail["report_url"] is None
+
+
+def test_report_served_when_present(client, settings, no_network):
+    from sextant.workspace import report_path
+
+    client.post("/api/topics", json={"name": "Has Report"})
+    report = report_path(settings.workspace_root / "has-report")
+    report.parent.mkdir(parents=True, exist_ok=True)
+    report.write_text("<html><body>integrated report</body></html>", encoding="utf-8")
+
+    response = client.get("/api/topics/has-report/report")
+    assert response.status_code == 200
+    assert "integrated report" in response.text
+
+    detail = client.get("/api/topics/has-report").json()
+    assert detail["report_exists"] is True
+    assert detail["report_url"] == "/api/topics/has-report/report"
+
+    listing = client.get("/api/topics").json()["topics"]
+    assert listing[0]["report_exists"] is True
+    assert listing[0]["report_url"] == "/api/topics/has-report/report"
+
+
 def test_invalid_date_returns_400(client, no_network):
     response = client.post(
         "/api/topics",

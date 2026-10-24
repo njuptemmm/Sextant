@@ -9,9 +9,22 @@ from sextant.engine.common import normalize_text
 
 _PUNCT = re.compile(r"[^a-z0-9一-鿿]+")
 
+#: Sources return the DOI in whatever form their landing page used: with a
+#: resolver prefix, or with a file-format suffix bolted on. Both forms point at
+#: the same paper, so they must collapse onto one dedupe key — otherwise the
+#: catalog lists the paper twice and its citation count is split in half.
+_DOI_PREFIX = re.compile(r"^(?:https?://(?:dx\.)?doi\.org/|doi:\s*)", re.I)
+_DOI_SUFFIX = re.compile(r"/(?:pdf|full|fulltext|abstract|html|epdf|summary|meta)$", re.I)
+
+
+def canonical_doi(value: Any) -> str:
+    """Normalize a DOI so resolver URLs and download suffixes do not fork the key."""
+    doi = _DOI_PREFIX.sub("", normalize_text(value)).strip().lower()
+    return _DOI_SUFFIX.sub("", doi.rstrip("/"))
+
 
 def dedupe_key(record: dict[str, Any]) -> str:
-    doi = normalize_text(record.get("doi")).lower()
+    doi = canonical_doi(record.get("doi"))
     if doi:
         return f"doi:{doi}"
     title = _PUNCT.sub(" ", normalize_text(record.get("title")).lower()).strip()

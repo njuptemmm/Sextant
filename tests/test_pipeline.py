@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
-from sextant.engine.render_html import render_catalog
+from sextant.engine.common import OTHER_DIRECTION
+from sextant.engine.render_html import _group_rows, render_catalog
 from sextant.pipeline.normalize import normalize
 from sextant.pipeline.plan import build_query_plan
 from sextant.pipeline.rank import score_records
+from sextant.pipeline.runner import _enrichment_candidates
 from sextant.runlog import EventBus, RunLogger
 from sextant.workspace import RANKED_FILE, catalog_path, create_topic, topic_dir, write_ranked
 
@@ -50,6 +53,19 @@ def test_normalize_merges_cross_source_duplicates():
     assert merged["source_count"] == 2
     assert merged["duplicate_count"] == 1
     assert merged["citations"] == 12
+
+
+def test_normalize_merges_doi_variants():
+    """A resolver prefix or a /pdf suffix must not fork one paper into two rows."""
+    rows = [
+        _record(record_id="openalex:W1", doi="10.1000/example", citations=1),
+        _record(record_id="openalex:W2", doi="https://doi.org/10.1000/example", citations=5),
+        _record(record_id="openalex:W3", doi="10.1000/example/pdf", citations=9),
+    ]
+    usable, _ = normalize(rows)
+    assert len(usable) == 1
+    assert usable[0]["duplicate_count"] == 2
+    assert usable[0]["citations"] == 9
 
 
 def test_normalize_routes_low_quality_abstracts_to_pending():
@@ -101,6 +117,17 @@ def test_plan_selects_core_sources_and_caps_queries(settings):
     assert (root / "01_queries" / "queries.json").exists()
 
 
+def test_plan_derives_keywords_when_topic_has_none(settings):
+    """Without keywords every record scores on citations alone, so fall back to the topic name."""
+    topic = create_topic(settings, name="Agent Evaluation")
+    root = topic_dir(settings, topic["topic_id"])
+    logger = RunLogger(topic_root=root, run_id="test-plan", bus=EventBus(), topic_id=topic["topic_id"])
+
+    plan = build_query_plan(root, topic, settings, logger)
+
+    assert plan["keywords"] == ["Agent Evaluation"]
+
+
 def test_render_catalog_produces_html(settings):
     topic = create_topic(settings, name="Agent Evaluation", keywords=["agent", "evaluation"])
     root = topic_dir(settings, topic["topic_id"])
@@ -126,3 +153,74 @@ def test_render_catalog_produces_html(settings):
     assert "Evaluating LLM agents with benchmarks" in html
     assert "Agent Evaluation" in html
     assert (root / RANKED_FILE).exists()
+
+
+def test_render_catalog_shows_chinese_title_below_english(settings):
+    topic = create_topic(settings, name="Agent Evaluation", keywords=["agent", "evaluation"])
+    root = topic_dir(settings, topic["topic_id"])
+    rows = [
+        {
+            "record_id": "openalex:W1",
+            "source": "openalex",
+            "title": "Evaluating LLM agents with benchmarks",
+            "title_zh": "用基准评测 LLM 智能体",
+            "abstract": "A reproducible benchmark suite for LLM agents covering planning and tool use.",
+            "abstract_zh": "一个可复现的 LLM 智能体基准套件，覆盖规划与工具使用。",
+            "abstract_source": "source_metadata",
+            "published_at": "2025-06-01",
+            "url": "https://example.org/paper",
+            "evidence_type": "scholarly_work",
+            "ranking_score": 88.5,
+            "research_direction": "Agent Evaluation",
+        }
+    ]
+    write_ranked(root, rows)
+
+    target = render_catalog(root, output=catalog_path(root), strict_chinese=False)
+    html = Path(target).read_text(encoding="utf-8")
+
+    assert 'class="paper-title-zh"' in html
+    assert "用基准评测 LLM 智能体" in html
+    assert html.index("Evaluating LLM agents with benchmarks") < html.index("用基准评测 LLM 智能体")
+
+
+def test_group_rows_folds_singleton_directions_into_other():
+    rows = [
+        _record(record_id="a1", research_direction="主要方向", ranking_score=90),
+        _record(record_id="a2", research_direction="主要方向", ranking_score=80),
+        _record(record_id="b1", research_direction="零散方向一", ranking_score=70),
+        _record(record_id="c1", research_direction="零散方向二", ranking_score=60),
+    ]
+
+    groups = _group_rows(rows)
+
+    assert [name for name, _, _ in groups] == ["主要方向", OTHER_DIRECTION]
+    assert [len(group_rows) for _, _, group_rows in groups] == [2, 2]
+    assert "零散方向" in groups[1][1]
+
+
+def test_enrichment_candidates_prefers_top_ranked_records(settings):
+    topic = {"topic_name": "LLM agent evaluation", "keywords": ["LLM agent", "evaluation"]}
+    plan = {"keywords": []}
+    strong = _record(record_id="strong", title="LLM agent evaluation benchmark")
+    medium = _record(
+        record_id="medium",
+        doi="10.1000/medium",
+        title="Agent evaluation methods",
+        abstract="Methods for evaluating agent behaviour in tool-use environments.",
+        citations=1,
+    )
+    weak = _record(
+        record_id="weak",
+        doi="10.1000/weak",
+        title="Unrelated marine biology survey",
+        abstract="A survey of coral reef ecology with no relation to software systems.",
+        published_at="2015-01-01",
+        citations=0,
+    )
+    small = replace(settings, llm_max_candidates=2)
+
+    chosen = _enrichment_candidates([weak, strong, medium], topic=topic, plan=plan, settings=small)
+
+    assert [row["record_id"] for row in chosen] == ["strong", "medium"]
+    assert "weak" not in {row["record_id"] for row in chosen}

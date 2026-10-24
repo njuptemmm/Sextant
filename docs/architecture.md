@@ -32,7 +32,7 @@
                 │ 调用（同步函数）
 ┌───────────────▼──────────────────────────────────────────────────┐
 │ 编排层 pipeline/                                                  │
-│  plan → retrieve → normalize → enrich → rank → render            │
+│  plan → retrieve → normalize → enrich → rank → render → report   │
 │  runner.py 负责阶段计时、事件发射、失败归因与运行记录               │
 └───────────────┬──────────────────────────────────────────────────┘
                 │
@@ -51,7 +51,9 @@
 │  01_queries/queries.json     本次检索计划                          │
 │  02_raw/search/*.jsonl       各源原始返回                          │
 │  03_processed/*.jsonl        排序结果 / 待核实                     │
-│  output/catalog.html         交付物                                │
+│  04_summary/*.json           报告卡片与中英双语正文                 │
+│  output/catalog.html         证据目录                              │
+│  output/综合调研报告：*.html  调研报告（需 LLM，可关闭）            │
 │  output/run_summary.json     运行汇总指标                          │
 │  logs/<run_id>.jsonl         结构化事件流                          │
 │  runs.json                   运行历史                              │

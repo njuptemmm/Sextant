@@ -22,6 +22,8 @@ from sextant.workspace import (
     load_topic,
     read_ranked,
     read_runs,
+    reconcile_stale_runs,
+    report_path,
     topic_dir,
     topic_summary,
 )
@@ -56,6 +58,11 @@ def _require_topic(root: Path, topic_id: str) -> dict[str, Any]:
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     app = FastAPI(title="Sextant", version=VERSION, docs_url="/api/docs", openapi_url="/api/openapi.json")
+
+    # A run only lives in this process's thread. Anything left "running" on
+    # disk from a previous process can never complete, so close it out before
+    # the console starts polling.
+    reconcile_stale_runs(settings)
 
     @app.get("/", include_in_schema=False)
     def index() -> FileResponse:
@@ -103,7 +110,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/topics")
     def topics() -> dict[str, Any]:
-        return {"topics": list_topics(settings)}
+        rows = list_topics(settings)
+        for row in rows:
+            report = report_path(topic_dir(settings, row["topic_id"]))
+            row["report_exists"] = report.exists()
+            row["report_url"] = f"/api/topics/{row['topic_id']}/report" if report.exists() else None
+        return {"topics": rows}
 
     @app.get("/api/topics/{topic_id}")
     def topic_detail(topic_id: str) -> dict[str, Any]:
@@ -148,6 +160,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         target = catalog_path(root)
         if not target.exists():
             raise HTTPException(status_code=404, detail="目录尚未生成，请先运行一次检索")
+        return FileResponse(target, media_type="text/html; charset=utf-8")
+
+    @app.get("/api/topics/{topic_id}/report")
+    def report(topic_id: str) -> FileResponse:
+        root = _root(settings, topic_id)
+        _require_topic(root, topic_id)
+        target = report_path(root)
+        if not target.exists():
+            raise HTTPException(status_code=404, detail="调研报告尚未生成；需要配置模型后重新运行一次")
         return FileResponse(target, media_type="text/html; charset=utf-8")
 
     @app.get("/api/topics/{topic_id}/events")

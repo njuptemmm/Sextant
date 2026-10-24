@@ -108,6 +108,9 @@
   .catalog-card .cc-text strong{display:block;color:#054f31;font-size:14px}
   .catalog-card .btn{margin-left:auto;background:var(--ok)}
   .catalog-card .btn:hover{background:#05603a}
+  .catalog-card #reportLink{margin-left:auto;background:transparent;color:var(--ok);border:1px solid var(--ok)}
+  .catalog-card #reportLink:hover{background:rgba(5,96,58,.08)}
+  .catalog-card #catalogLink{margin-left:8px}
   @media (max-width:1040px){
     .grid{grid-template-columns:1fr}
     .stages{grid-template-columns:repeat(3,1fr)}
@@ -230,6 +233,7 @@
             <strong>证据目录已生成</strong>
             <span id="catalogMeta">可直接打开查看筛选与中英摘要。</span>
           </div>
+          <button class="btn" id="reportLink" type="button" disabled>调研报告 →</button>
           <button class="btn" id="catalogLink" type="button">打开目录 →</button>
         </div>
       </div>
@@ -245,6 +249,7 @@ const STAGES = [
   ["enrich","中文增强"],
   ["rank","相关性排序"],
   ["render","目录生成"],
+  ["report","调研报告"],
 ];
 const state = { topic:null, runId:null, source:null, finished:false };
 
@@ -268,6 +273,7 @@ function resetWork(topic){
   closeStream();
   $("alert").classList.remove("show");
   $("catalogCard").classList.remove("show");
+  $("reportLink").disabled = true;
   $("log").innerHTML = '<div class="empty">正在等待事件…</div>';
   $("workTitle").textContent = topic ? topic.topic_name : "运行时间线";
   $("workSub").textContent = topic ? `主题 ID：${topic.topic_id}` : "选择一个主题查看执行过程。";
@@ -364,6 +370,10 @@ async function selectTopic(topicId){
       $("catalogLink").onclick = () => window.open(`/api/topics/${encodeURIComponent(topic.topic_id)}/catalog`, "_blank");
       $("openCatalogBtn").onclick = $("catalogLink").onclick;
     }
+    if (topic.report_exists){
+      $("reportLink").disabled = false;
+      $("reportLink").onclick = () => window.open(`/api/topics/${encodeURIComponent(topic.topic_id)}/report`, "_blank");
+    }
     await loadTopics();
   }catch(error){
     showAlert(`读取主题失败：${error.message}`, "刷新页面或确认主题目录是否存在。");
@@ -428,6 +438,12 @@ function handleEvent(event){
     $("catalogLink").onclick = link;
     $("openCatalogBtn").onclick = link;
     $("openCatalogBtn").disabled = false;
+    if (data.report){
+      $("reportLink").disabled = false;
+      $("reportLink").onclick = () => window.open(`/api/topics/${encodeURIComponent(state.topic.topic_id)}/report`, "_blank");
+    } else {
+      $("reportLink").disabled = true;
+    }
     closeStream();
     loadTopics();
   }

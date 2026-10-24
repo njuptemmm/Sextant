@@ -48,6 +48,13 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = _env(name).lower()
+    if not raw:
+        return default
+    return raw not in {"0", "false", "no", "off"}
+
+
 @dataclass(frozen=True)
 class Settings:
     workspace_root: Path = field(default_factory=lambda: REPO_ROOT / "workspace")
@@ -64,6 +71,28 @@ class Settings:
     llm_model: str = ""
     llm_timeout_seconds: float = 45.0
     llm_max_candidates: int = 40
+    #: Records per enrichment request. Smaller batches survive reasoning-model
+    #: token budgets better; larger batches mean fewer round trips.
+    llm_enrich_batch_size: int = 10
+    #: Completion budget per enrichment request, reasoning tokens included.
+    llm_enrich_max_tokens: int = 8000
+    #: Completion budget for the retrieval plan. Reasoning tokens are billed to
+    #: the same allowance, so 900 was not enough for a six-query plan.
+    llm_plan_max_tokens: int = 2000
+    #: Papers analysed per report request. Each item needs a bilingual impact
+    #: paragraph, so this batch is smaller than the enrichment batch.
+    llm_report_batch_size: int = 5
+    #: Completion budget for one report-analysis batch, reasoning included.
+    llm_report_max_tokens: int = 8000
+    #: Completion budget for the single synthesis call. It writes the executive
+    #: summary, six bilingual sections and the subtheme grouping at once.
+    llm_report_synthesis_max_tokens: int = 8000
+    #: A synthesis call is long; the default 45s request timeout is too short.
+    llm_report_timeout_seconds: float = 180.0
+    #: How many top-ranked papers enter the integrated report.
+    report_max_papers: int = 20
+    #: Reports need an LLM; disable this to keep runs fast and cheap.
+    report_enabled: bool = True
 
     @property
     def llm_enabled(self) -> bool:
@@ -99,6 +128,15 @@ def get_settings() -> Settings:
         llm_model=_env("SEXTANT_LLM_MODEL"),
         llm_timeout_seconds=_env_float("SEXTANT_LLM_TIMEOUT", 45.0),
         llm_max_candidates=_env_int("SEXTANT_LLM_MAX_CANDIDATES", 40),
+        llm_enrich_batch_size=_env_int("SEXTANT_LLM_ENRICH_BATCH_SIZE", 10),
+        llm_enrich_max_tokens=_env_int("SEXTANT_LLM_ENRICH_MAX_TOKENS", 8000),
+        llm_plan_max_tokens=_env_int("SEXTANT_LLM_PLAN_MAX_TOKENS", 2000),
+        llm_report_batch_size=_env_int("SEXTANT_LLM_REPORT_BATCH_SIZE", 5),
+        llm_report_max_tokens=_env_int("SEXTANT_LLM_REPORT_MAX_TOKENS", 8000),
+        llm_report_synthesis_max_tokens=_env_int("SEXTANT_LLM_REPORT_SYNTHESIS_MAX_TOKENS", 8000),
+        llm_report_timeout_seconds=_env_float("SEXTANT_LLM_REPORT_TIMEOUT", 180.0),
+        report_max_papers=_env_int("SEXTANT_REPORT_MAX_PAPERS", 20),
+        report_enabled=_env_bool("SEXTANT_REPORT_ENABLED", True),
     )
 
 

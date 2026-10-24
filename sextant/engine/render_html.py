@@ -17,6 +17,7 @@ from sextant.engine.abstract_labels import abstract_source_label
 SCRIPT_DIR = Path(__file__).resolve().parent
 
 from sextant.engine.common import (
+    OTHER_DIRECTION,
     article_catalog_file,
     deep_read_file,
     contains_cjk,
@@ -495,7 +496,7 @@ def _ranked_rows(path: Path) -> list[dict[str, Any]]:
     return read_jsonl(path)
 
 
-def _research_direction(row: dict[str, Any], fallback: str = "其他相关研究") -> str:
+def _research_direction(row: dict[str, Any], fallback: str = OTHER_DIRECTION) -> str:
     explicit = _text(row.get("research_direction") or row.get("method_category") or row.get("primary_category"))
     if explicit:
         return explicit
@@ -514,7 +515,16 @@ def _research_direction_description(row: dict[str, Any], name: str) -> str:
     return f"围绕“{name}”方向的相关研究，按综合排序保留原始证据顺序。"
 
 
-def _group_rows(rows: list[dict[str, Any]]) -> list[tuple[str, str, list[dict[str, Any]]]]:
+#: Groups smaller than this are folded into ``OTHER_DIRECTION``. Without it a
+#: per-record model label produces dozens of one-paper sections and the catalog
+#: navigation becomes noise instead of an overview.
+MIN_GROUP_SIZE = 2
+
+
+def _group_rows(
+    rows: list[dict[str, Any]],
+    min_group_size: int = MIN_GROUP_SIZE,
+) -> list[tuple[str, str, list[dict[str, Any]]]]:
     groups: dict[str, dict[str, Any]] = {}
     order: list[str] = []
     for row in rows:
@@ -524,110 +534,68 @@ def _group_rows(rows: list[dict[str, Any]]) -> list[tuple[str, str, list[dict[st
             groups[name] = {"description": description, "rows": []}
             order.append(name)
         groups[name]["rows"].append(row)
+
+    if min_group_size > 1:
+        spilled: list[dict[str, Any]] = []
+        for name in list(order):
+            if name == OTHER_DIRECTION or len(groups[name]["rows"]) >= min_group_size:
+                continue
+            spilled.extend(groups.pop(name)["rows"])
+            order.remove(name)
+        if spilled:
+            if OTHER_DIRECTION not in groups:
+                groups[OTHER_DIRECTION] = {
+                    "description": (
+                        f"未归入主要方向的记录，含不足 {min_group_size} 篇的零散方向；"
+                        "统一列在此处，避免目录过度碎片化。"
+                    ),
+                    "rows": [],
+                }
+                order.append(OTHER_DIRECTION)
+            groups[OTHER_DIRECTION]["rows"].extend(spilled)
+
     order.sort(key=lambda name: min(float(row.get("ranking_score") or 0) * -1 for row in groups[name]["rows"]))
     return [(name, groups[name]["description"], groups[name]["rows"]) for name in order]
 
 
-def _deep_read_panel_html() -> str:
-    return """<div class="deep-read-panel">
-      <h3>论文精读 Prompt 生成</h3>
-      <p class="deep-read-desc">勾选右侧目录中的文章，此处将自动生成精读指令。点击"复制 Prompt"后粘贴到输入框即可启动精读。</p>
-      <div class="deep-read-preview" id="deepReadPreview">
-        <span class="deep-read-placeholder">尚未勾选文章</span>
-      </div>
-      <div class="deep-read-actions">
-        <button type="button" class="deep-read-clear" id="deepReadClear">清空勾选</button>
-        <button type="button" class="deep-read-copy" id="deepReadCopy">复制 Prompt</button>
-      </div>
-    </div>"""
-
-
-def _deep_read_css(layout_selector: str = ".catalog-layout") -> str:
+def _paper_type_css(layout_selector: str = ".catalog-layout") -> str:
+    """Per-paper typography shared by the catalog and the report."""
     return f"""
-    {layout_selector} .side-column {{ position: sticky; top: 14px; display: flex; flex-direction: column; gap: 12px; max-height: calc(100vh - 28px); }}
-    {layout_selector} .side-column .side-nav {{ position: static; max-height: none; flex: 1 1 auto; min-height: 0; }}
-    .deep-read-panel {{ flex: 0 0 auto; padding: 12px 14px; background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--blue); border-radius: 7px; box-shadow: 0 3px 12px rgba(20,35,50,.05); }}
-    .deep-read-panel h3 {{ margin: 0 0 6px; color: var(--navy); font-size: 13px; font-weight: 800; }}
-    .deep-read-desc {{ margin: 0 0 9px; color: var(--muted); font-size: 11px; line-height: 1.42; }}
-    .deep-read-preview {{ min-height: 44px; max-height: 200px; overflow-y: auto; padding: 8px 10px; background: linear-gradient(180deg, #fbfdfe 0%, #f6fafb 100%); border: 1px solid #d8e2e8; border-radius: 5px; font-size: 12px; line-height: 1.5; color: #344454; white-space: pre-wrap; overflow-wrap: anywhere; }}
-    .deep-read-placeholder {{ color: #8a98a5; font-style: italic; }}
-    .deep-read-actions {{ display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 9px; }}
-    .deep-read-actions button {{ padding: 7px 10px; border: 0; border-radius: 5px; cursor: pointer; font-size: 12px; font-weight: 700; transition: background .15s, filter .15s; }}
-    .deep-read-clear {{ color: #516273; background: #e9f0f3; border: 1px solid #cbd8df; }}
-    .deep-read-clear:hover {{ background: #dde8ed; }}
-    .deep-read-copy {{ color: #fff; background: linear-gradient(135deg, var(--blue), var(--teal)); }}
-    .deep-read-copy:hover {{ filter: brightness(1.08); }}
-    .deep-read-copy.copied {{ background: var(--green) !important; }}
+    .rank-col {{ display: flex; flex-direction: column; gap: 1px; align-items: flex-start; }}
+    .score {{ color: var(--blue); font-size: 11px; font-weight: 900; letter-spacing: 0; white-space: nowrap; }}
     .paper-plain-summary {{ margin-top: 6px; color: #52616f; font-size: 12px; line-height: 1.5; }}
-    .paper-row.deep-read-enabled .row-main, .analysis-row.deep-read-enabled .row-main {{ grid-template-columns: 22px 54px minmax(0, 1fr); }}
-    .paper-row.deep-read-enabled .row-meta, .analysis-row.deep-read-enabled .row-meta {{ grid-column: 3; }}
-    .paper-row.deep-read-enabled .deep-read-check, .analysis-row.deep-read-enabled .deep-read-check {{ width: 15px; height: 15px; margin: 0; cursor: pointer; accent-color: var(--teal); align-self: center; }}
-    @media (max-width: 980px) {{
-      {layout_selector} .side-column {{ position: static; max-height: none; }}
-      {layout_selector} .side-column .side-nav {{ flex: 0 0 auto; min-height: 0; }}
-    }}
-    @media (max-width: 620px) {{
-      .paper-row.deep-read-enabled .row-main, .analysis-row.deep-read-enabled .row-main {{ grid-template-columns: 22px 46px minmax(0, 1fr); }}
-    }}
+    .paper-title-zh {{ margin-top: 3px; color: #34495e; font-size: 12.5px; font-weight: 600; line-height: 1.45; }}
     @media print {{
       {layout_selector} {{ grid-template-columns: 1fr; }}
-      {layout_selector} .side-column {{ display: none !important; }}
-      .deep-read-panel, .deep-read-check {{ display: none !important; }}
     }}
     """
 
 
-def _deep_read_script() -> str:
-    return """
-    (() => {
-      const checks = [...document.querySelectorAll('.deep-read-check')];
-      const preview = document.getElementById('deepReadPreview');
-      const clearBtn = document.getElementById('deepReadClear');
-      const copyBtn = document.getElementById('deepReadCopy');
-      if (!checks.length || !preview || !clearBtn || !copyBtn) return;
-      const buildPrompt = () => {
-        const selected = checks.filter(c => c.checked && c.dataset.paperTitle);
-        if (!selected.length) return '';
-        return '\\u5bf9 ' + selected.map(c => c.dataset.paperTitle).join('\\u3001') + ' \\u8fd9\\u51e0\\u7bc7\\u6587\\u7ae0\\u8fdb\\u884c\\u8bba\\u6587\\u7cbe\\u8bfb';
-      };
-      const updatePreview = () => {
-        const prompt = buildPrompt();
-        preview.innerHTML = prompt
-          ? prompt.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
-          : '<span class="deep-read-placeholder">\\u5c1a\\u672a\\u52fe\\u9009\\u6587\\u7ae0</span>';
-      };
-      checks.forEach(c => c.addEventListener('change', updatePreview));
-      clearBtn.addEventListener('click', () => { checks.forEach(c => { c.checked = false; }); updatePreview(); });
-      const showCopied = () => {
-        copyBtn.textContent = '\\u5df2\\u590d\\u5236';
-        copyBtn.classList.add('copied');
-        setTimeout(() => { copyBtn.textContent = '\\u590d\\u5236 Prompt'; copyBtn.classList.remove('copied'); }, 2000);
-      };
-      const fallbackCopy = (text, onSuccess) => {
-        const ta = document.createElement('textarea');
-        ta.value = text;
-        ta.style.cssText = 'position:fixed;opacity:0;';
-        document.body.appendChild(ta);
-        ta.select();
-        try { document.execCommand('copy'); onSuccess(); } catch (e) {}
-        document.body.removeChild(ta);
-      };
-      copyBtn.addEventListener('click', () => {
-        const text = buildPrompt();
-        if (!text) return;
-        if (navigator.clipboard && window.isSecureContext) {
-          navigator.clipboard.writeText(text).then(showCopied).catch(() => fallbackCopy(text, showCopied));
-        } else {
-          fallbackCopy(text, showCopied);
-        }
-      });
-      updatePreview();
-    })();
-    """
-
-def _catalog_card(row: dict[str, Any], rank: int | None, labels: dict[str, str], lang: str = "zh", pending: bool = False, deep_read: bool = False) -> str:
-    title = _text(row.get("title")) or "Untitled"
+def _title_html(row: dict[str, Any], title: str) -> str:
+    """English title as the canonical link, Chinese title underneath when enriched."""
     url = _link(row)
+    link = (
+        f'<a class="paper-title-link" href="{_esc(url)}" target="_blank" rel="noopener">{_esc(title)}</a>'
+        if url
+        else f'<span class="paper-title-link no-link">{_esc(title)}</span>'
+    )
+    zh = _text(row.get("title_zh"))
+    if zh and zh.strip().lower() != title.strip().lower():
+        return f'{link}<div class="paper-title-zh" lang="zh-CN">{_esc(zh)}</div>'
+    return link
+
+
+def _score_text(value: Any) -> str:
+    """Format a ranking score for display; empty when the record has none."""
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        return ""
+    return f"{score:.1f} 分"
+
+
+def _catalog_card(row: dict[str, Any], rank: int | None, labels: dict[str, str], lang: str = "zh", pending: bool = False) -> str:
+    title = _text(row.get("title")) or "Untitled"
     source = _source(row)
     year = _year(row)
     evidence_type = _evidence_type(row)
@@ -635,22 +603,32 @@ def _catalog_card(row: dict[str, Any], rank: int | None, labels: dict[str, str],
     journal = _text(row.get("journal")) or source
     source_badge = abstract_source_label("unavailable" if pending else (row.get("abstract_source") or "source_metadata"), "zh")
     rank_text = labels["pending"] if pending else f"#{int(rank or 0):03d}"
-    title_html = f'<a class="paper-title-link" href="{_esc(url)}" target="_blank" rel="noopener">{_esc(title)}</a>' if url else f'<span class="paper-title-link no-link">{_esc(title)}</span>'
+    # The rank alone says where a paper sits, not how far ahead it is. Two
+    # papers at #001 and #002 can be 30 points apart, and the reader has no way
+    # to see that from the number. Show the score directly under the rank.
+    score_text = "" if pending else _score_text(row.get("ranking_score"))
+    rank_html = (
+        f'<div class="rank-col"><span class="rank">{_esc(rank_text)}</span>'
+        f'<span class="score" title="综合评分，满分 100">{_esc(score_text)}</span></div>'
+        if score_text
+        else f'<span class="rank">{_esc(rank_text)}</span>'
+    )
+    title_html = _title_html(row, title)
     plain_summary = _plain_language_summary_zh(row)
     plain_summary_html = f'<div class="paper-plain-summary">{_block(plain_summary)}</div>' if plain_summary and not pending else ""
     search_blob = " ".join([title, abstract_zh, abstract_en, journal, source, evidence_type, _research_direction(row)]).lower()
     reason = _text(row.get("pending_verification_reason"))
     reason_html = f'<div class="detail-field"><strong>{labels["failure_reason"]}</strong><div class="plain-note">{_block(reason)}</div></div>' if pending and reason else ""
+    # The score is only defensible if the reader can recompute it from the
+    # same six components the ranker used, so keep them one click away.
+    basis = [_text(item) for item in (row.get("ranking_reasons") or []) if _text(item)] if not pending else []
+    basis_html = f'<div class="detail-field"><strong>评分依据</strong><div class="plain-note">{_esc(" · ".join(basis))}</div></div>' if basis else ""
     button_label = labels["view_abstract"]
     hide_label = labels["hide_abstract"]
     if abstract_zh:
         abstract_box = _bilingual_box(abstract_zh, abstract_en, pairs=_extract_line_pairs(row, "abstract"))
     else:
         abstract_box = _single_language_box(abstract_en)
-    record_id = _text(row.get("record_id") or row.get("paper_id"))
-    deep_read_ready = deep_read and not pending and bool(record_id)
-    article_class = "paper-row deep-read-enabled" if deep_read_ready else "paper-row"
-    checkbox_html = f'<input type="checkbox" class="deep-read-check" data-paper-id="{_esc(record_id)}" data-paper-title="{_esc(title)}" aria-label="精读选择：{_esc(title)}">' if deep_read_ready else ""
     if pending:
         return f"""
     <article class="paper-row pending-card" data-source="{_esc(source)}" data-year="{_esc(year)}" data-type="{_esc(evidence_type)}" data-search="{_esc(search_blob)}">
@@ -661,14 +639,13 @@ def _catalog_card(row: dict[str, Any], rank: int | None, labels: dict[str, str],
       </div>
     </article>"""
     return f"""
-    <article class="{article_class}" data-source="{_esc(source)}" data-year="{_esc(year)}" data-type="{_esc(evidence_type)}" data-search="{_esc(search_blob)}">
+    <article class="paper-row" data-source="{_esc(source)}" data-year="{_esc(year)}" data-type="{_esc(evidence_type)}" data-search="{_esc(search_blob)}">
       <div class="row-main">
-        {checkbox_html}
-        <span class="rank">{_esc(rank_text)}</span>
+        {rank_html}
         <div class="row-title">{title_html}{plain_summary_html}</div>
         <div class="row-meta"><span>{_esc(row.get('published_at') or row.get('updated_at') or '-')}</span><span>{_esc(source)}</span><span>{_esc(journal)}</span><span>{_esc(source_badge)}</span></div>
       </div>
-      <details class="row-detail" data-closed="{_esc(button_label)}" data-open="{_esc(hide_label)}"><summary>{_esc(button_label)}</summary><div class="detail-content"><div class="detail-field"><strong>{labels['abstract']}</strong>{abstract_box}</div>{reason_html}</div></details>
+      <details class="row-detail" data-closed="{_esc(button_label)}" data-open="{_esc(hide_label)}"><summary>{_esc(button_label)}</summary><div class="detail-content"><div class="detail-field"><strong>{labels['abstract']}</strong>{abstract_box}</div>{basis_html}{reason_html}</div></details>
     </article>"""
 
 def render_catalog(root: Path, output: Path | None = None, lang: str = "zh", input_path: Path | None = None, strict_chinese: bool = True) -> Path:
@@ -690,7 +667,7 @@ def render_catalog(root: Path, output: Path | None = None, lang: str = "zh", inp
     for group_index, (name, description, group_rows) in enumerate(grouped, start=1):
         section_id = f"group-{group_index}"
         nav_groups.append(f'<a class="nav-subitem" href="#{section_id}">{_esc(name)}</a>')
-        cards = "".join(_catalog_card(row, row_ranks[id(row)], labels, "zh", deep_read=True) for row in group_rows)
+        cards = "".join(_catalog_card(row, row_ranks[id(row)], labels, "zh") for row in group_rows)
         group_sections.append(f'<section id="{section_id}" class="catalog-group"><div class="group-head"><h2>{_esc(name)}</h2><p>{_block(description)}</p><span>{len(group_rows)} 篇</span></div><div class="paper-list">{cards}</div></section>')
     pending_cards = "".join(_catalog_card(row, None, labels, "zh", pending=True) for row in pending_rows)
     pending_section = f'<section id="pending" class="catalog-group pending-group"><div class="group-head"><h2>{labels["pending"]}</h2><p>{labels["pending_note"]}</p><span>{len(pending_rows)}</span></div><div class="paper-list">{pending_cards}</div></section>' if pending_rows else ""
@@ -704,7 +681,7 @@ def render_catalog(root: Path, output: Path | None = None, lang: str = "zh", inp
     else:
         title = f"{_text(topic.get('topic_name')) or root.name} - {labels['catalog']}"
     nav_html = f'<nav class="side-nav"><a href="#catalog">{labels["catalog"]}</a>{"".join(nav_groups)}{pending_nav}</nav>'
-    side_column = f'<div class="side-column">{nav_html}{_deep_read_panel_html()}</div>'
+    side_column = f'<div class="side-column">{nav_html}</div>'
     body = f"""
     <div class="report-layout catalog-layout">
       {side_column}
@@ -717,7 +694,7 @@ def render_catalog(root: Path, output: Path | None = None, lang: str = "zh", inp
         {pending_section}
       </div>
     </div>"""
-    catalog_css = _deep_read_css(".catalog-layout") + """
+    catalog_css = _paper_type_css(".catalog-layout") + """
     .catalog-layout .abstract-single { padding: 10px 12px; background: #fbfdfe; border: 1px solid #d8e2e8; border-radius: 7px; }"""
     script = _details_toggle_script() + """
     (() => {
@@ -738,7 +715,7 @@ def render_catalog(root: Path, output: Path | None = None, lang: str = "zh", inp
       };
       controls.forEach(control => control.addEventListener('input', apply));
     })();
-    """ + _deep_read_script()
+    """
     target = output or (focus_catalog_file(root) if is_focus_catalog else combined_catalog_file(root))
     target.parent.mkdir(parents=True, exist_ok=True)
     rendered = _page(lang="zh", title=title, subtitle=question or labels["catalog_subtitle"], eyebrow=labels["catalog_eyebrow"], body=body, script=script, css=catalog_css)
@@ -798,19 +775,15 @@ def _basis_tag(card: dict[str, Any], lang: str = "zh") -> tuple[str, str]:
     return mapping.get(basis, ("partial", basis))
 
 
-def _analysis_card(card: dict[str, Any], lang: str = "zh", detailed: bool = False, deep_read: bool = False) -> str:
+def _analysis_card(card: dict[str, Any], lang: str = "zh", detailed: bool = False) -> str:
     labels = LABELS["zh"]
     title = _text(card.get("title")) or "Untitled"
-    url = _link(card)
     category = _category(card, "zh")
     css_class, basis_label = _basis_tag(card, "zh")
     source_label = abstract_source_label(card.get("abstract_source") or ("abstract_fallback" if card.get("reading_basis") == "abstract_fallback" else "source_metadata"), "zh")
-    title_html = f'<a class="paper-title-link" href="{_esc(url)}" target="_blank" rel="noopener">{_esc(title)}</a>' if url else f'<span class="paper-title-link no-link">{_esc(title)}</span>'
+    title_html = _title_html(card, title)
     plain_summary = _plain_language_summary_zh(card)
     plain_summary_html = f'<div class="paper-plain-summary">{_block(plain_summary)}</div>' if plain_summary else ""
-    record_id = _text(card.get("paper_id") or card.get("record_id"))
-    checkbox_html = f'<input type="checkbox" class="deep-read-check" data-paper-id="{_esc(record_id)}" data-paper-title="{_esc(title)}" aria-label="精读选择：{_esc(title)}">' if deep_read and record_id else ""
-    row_class = "paper-row analysis-row deep-read-enabled" if deep_read and record_id else "paper-row analysis-row"
     field_html: list[str] = []
     evidence_mode = _text(card.get("evidence_mode")) or "abstract_only"
     render_fields = {
@@ -824,9 +797,8 @@ def _analysis_card(card: dict[str, Any], lang: str = "zh", detailed: bool = Fals
     button_label = labels["view_details"]
     hide_label = labels["hide_details"]
     return f"""
-    <article id="{_esc(_paper_anchor_id(card.get('paper_id') or card.get('record_id') or title))}" class="{row_class}" data-basis="{_esc(card.get('reading_basis'))}">
+    <article id="{_esc(_paper_anchor_id(card.get('paper_id') or card.get('record_id') or title))}" class="paper-row analysis-row" data-basis="{_esc(card.get('reading_basis'))}">
       <div class="row-main">
-        {checkbox_html}
         <span class="rank">#{int(card.get('rank') or 0):03d}</span>
         <div class="row-title">{title_html}{plain_summary_html}</div>
         <div class="row-meta"><span>{_esc(card.get('published_at') or '-')}</span><span>{_esc(card.get('journal') or '-')}</span><span>{_esc(category)}</span><span class="basis {css_class}">{_esc(basis_label)}</span><span>{_esc(source_label)}</span></div>
@@ -892,7 +864,7 @@ def render_report(root: Path, lang: str = "zh", cards_path: Path | None = None, 
             raise SystemExit(f"Subtheme '{theme_title}' references unknown paper_ids: {', '.join(unknown[:5])}")
         assigned.update(paper_ids)
         nav_themes.append(f'<a class="nav-subitem" href="#theme-{index}">{_esc(theme_title)}</a>')
-        theme_cards = "".join(_analysis_card(by_id[paper_id], "zh", deep_read=True) for paper_id in paper_ids)
+        theme_cards = "".join(_analysis_card(by_id[paper_id], "zh") for paper_id in paper_ids)
         theme_pairs = _normalize_line_pairs(theme.get("summary_bilingual_lines")) or _normalize_line_pairs(theme_en.get("summary_bilingual_lines"))
         theme_summary_links = theme.get("summary_links") if isinstance(theme.get("summary_links"), list) else []
         theme_summary_box = _zh_only_box(theme_summary_zh, html_content=_linked_block(theme_summary_zh, theme_summary_links, by_id))
@@ -924,12 +896,12 @@ def render_report(root: Path, lang: str = "zh", cards_path: Path | None = None, 
     pending_cards = "".join(_catalog_card(row, None, labels, "zh", pending=True) for row in pending_rows)
     pending_section = f'<section id="pending"><div class="section-title"><h2>{labels["pending"]}</h2><span class="section-note">{len(pending_rows)}</span></div><div class="panel" style="margin-bottom:14px"><p>{labels["pending_note"]}</p></div><div class="paper-list">{pending_cards}</div></section>' if pending_rows else ""
     pending_nav = f'<a href="#pending">{labels["pending"]}</a>' if pending_rows else ""
-    report_css = _deep_read_css(".report-layout") + """
+    report_css = _paper_type_css(".report-layout") + """
     .inline-paper-link { color: #0f5f78; text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px; font-weight: 700; }
     .inline-paper-link:hover { color: #0b7b7b; }
     .analysis-row { scroll-margin-top: 18px; }
     """
-    side_column = f'<div class="side-column"><nav class="side-nav"><a href="#integrated">{labels["integrated"]}</a><a href="#themes">{labels["subthemes"]}</a>{"".join(nav_themes)}{pending_nav}</nav>{_deep_read_panel_html()}</div>'
+    side_column = f'<div class="side-column"><nav class="side-nav"><a href="#integrated">{labels["integrated"]}</a><a href="#themes">{labels["subthemes"]}</a>{"".join(nav_themes)}{pending_nav}</nav></div>'
     body = f"""
     <div class="report-layout">
       {side_column}
@@ -941,7 +913,7 @@ def render_report(root: Path, lang: str = "zh", cards_path: Path | None = None, 
     </div>"""
     target = output or combined_summary_file(root)
     target.parent.mkdir(parents=True, exist_ok=True)
-    rendered = _page(lang="zh", title=title, subtitle=_text(topic.get("primary_question")), eyebrow=labels["report_eyebrow"], body=body, script=_details_toggle_script() + _deep_read_script(), css=report_css)
+    rendered = _page(lang="zh", title=title, subtitle=_text(topic.get("primary_question")), eyebrow=labels["report_eyebrow"], body=body, script=_details_toggle_script(), css=report_css)
     _assert_no_empty_chinese_slots(rendered, "summary_html")
     target.write_text(rendered, encoding="utf-8")
     persist_status(root)

@@ -6,8 +6,9 @@
 
 ## 1. 端到端延迟
 
-一次完整链路是 `plan → retrieve → normalize → enrich → rank → render`。下表是三次真实运行的
-`run_summary.json`（每个来源的单次上限分别取 5 和 20）：
+一次完整链路是 `plan → retrieve → normalize → enrich → rank → render → report`。下表是三次真实运行的
+`run_summary.json`（每个来源的单次上限分别取 5 和 20）。这三次都**未配置模型**，因此 `enrich` 与
+`report` 被跳过，数字反映纯检索与渲染成本。
 
 | 场景 | 主题 | 每源上限 | 原始记录 | 去重后 | 待核验 | 总耗时 | retrieve | render |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
@@ -20,6 +21,12 @@
 
 场景 B 更慢，是因为那次运行命中了 PubMed，而 PubMed 请求在本地网络下走了 4.8 s 才因证书校验失败超时；
 这恰好演示了失败隔离：该来源记为 `warning`，其余四个来源的结果仍照常产出目录。
+
+### 报告阶段的额外成本
+
+`report` 需要 LLM，未配置时整段跳过。开启后，Top 20 文献会产生 4 次分析调用（每批 5 篇）和
+1 次综合调用。deepswe 主题实测：20 篇证据、`deepseek-flash`、该阶段耗时 **79–82 s**，产物约
+239 KB；综合调用单次预算 `max_tokens=8000`（推理 token 计入同一额度）。
 
 ### 延迟从哪来
 

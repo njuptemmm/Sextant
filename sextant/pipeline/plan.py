@@ -70,11 +70,19 @@ def _merge_queries(
 
 def build_query_plan(root: Path, topic: dict[str, Any], settings: Settings, logger: RunLogger) -> dict[str, Any]:
     heuristic = _heuristic_queries(topic)
-    planned = plan_queries(settings, topic)
+    plan_notes: list[str] = []
+    planned = plan_queries(settings, topic, notes=plan_notes)
     queries = _merge_queries(heuristic, planned.get("queries") if planned else None)
     keywords = list(topic.get("keywords") or [])
     if planned and planned.get("keywords"):
         keywords = list(dict.fromkeys([*keywords, *planned["keywords"]]))
+    # The model does not always return keywords, and a topic can be created with
+    # none at all. Ranking scores keyword coverage first, so an empty list makes
+    # every record fall back to citations + recency only — the catalog still
+    # renders, but nothing is actually matched against the topic. Fall back to
+    # the same derivation the heuristic plan uses.
+    if not keywords:
+        keywords = _keywords(topic)
     directions = planned.get("directions", []) if planned else []
     specs = [spec for spec in active_sources(topic) if any(row["source"] == spec.id for row in queries)]
 
@@ -89,6 +97,13 @@ def build_query_plan(root: Path, topic: dict[str, Any], settings: Settings, logg
         "queries": queries,
     }
     write_json(root / QUERIES_FILE, plan)
+    if plan_notes:
+        logger.emit(
+            "plan",
+            "warning",
+            "模型规划失败，已降级为启发式检索式",
+            reasons=plan_notes[:3],
+        )
     logger.emit(
         "plan",
         "completed",

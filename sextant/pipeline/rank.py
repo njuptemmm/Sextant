@@ -6,9 +6,9 @@ import math
 from datetime import date, datetime
 from typing import Any
 
-from sextant.engine.common import normalize_text
+from sextant.engine.common import OTHER_DIRECTION, normalize_text
 
-FALLBACK_DIRECTION = "其他相关研究"
+FALLBACK_DIRECTION = OTHER_DIRECTION
 
 DIRECTION_DESCRIPTION = "围绕「{name}」方向的相关研究，按综合得分排序，保留来源证据。"
 

@@ -12,12 +12,13 @@ from collections.abc import Callable
 from typing import Any
 
 from sextant.config import Settings
-from sextant.engine.common import write_json
+from sextant.engine.common import summary_file, write_json
 from sextant.engine.render_html import render_catalog
 from sextant.llm import enrich_records
 from sextant.pipeline.normalize import normalize
 from sextant.pipeline.plan import build_query_plan
 from sextant.pipeline.rank import score_records
+from sextant.pipeline.report import build_report
 from sextant.pipeline.retrieve import retrieve
 from sextant.runlog import BUS, EventBus, RunLogger, utc_now_iso
 from sextant.workspace import (
@@ -43,6 +44,27 @@ def new_run_id() -> str:
 def _timer() -> Callable[[], int]:
     started = time.perf_counter()
     return lambda: int((time.perf_counter() - started) * 1000)
+
+
+def _enrichment_candidates(
+    usable: list[dict[str, Any]],
+    *,
+    topic: dict[str, Any],
+    plan: dict[str, Any],
+    settings: Settings,
+) -> list[dict[str, Any]]:
+    """Pick the records most worth translating, not the first N in source order.
+
+    Enrichment runs before the final ranking, but relevance is already
+    computable — score once cheaply, translate the leaders, then score again
+    with the translations attached. Without this the model spends its budget
+    on whichever source happened to return first.
+    """
+    limit = max(1, settings.llm_max_candidates)
+    if len(usable) <= limit:
+        return usable
+    provisional = score_records(usable, topic=topic, plan=plan)
+    return provisional[:limit]
 
 
 def run_pipeline(
@@ -111,16 +133,46 @@ def run_pipeline(
         # 4. optional LLM enrichment
         stage = _timer()
         enriched: dict[str, dict[str, Any]] = {}
+        enrich_notes: list[str] = []
         if settings.llm_enabled:
-            logger.emit("enrich", "started", "调用模型生成中文标题与摘要", model=settings.llm_model)
-            enriched = enrich_records(settings, topic=topic, records=usable)
-            metrics["enrich"] = stage()
+            candidates = _enrichment_candidates(usable, topic=topic, plan=plan, settings=settings)
             logger.emit(
                 "enrich",
-                "completed" if enriched else "warning",
-                f"完成 {len(enriched)} 篇中文增强" if enriched else "模型未返回可用结果，降级为原文摘要",
+                "started",
+                "调用模型生成中文标题与摘要",
+                model=settings.llm_model,
+                candidates=len(candidates),
+                records=len(usable),
+                directions=len(plan.get("directions") or []),
+            )
+            enriched = enrich_records(
+                settings,
+                topic=topic,
+                records=candidates,
+                notes=enrich_notes,
+                directions=plan.get("directions") or [],
+            )
+            metrics["enrich"] = stage()
+            if enriched and not enrich_notes:
+                status = "completed"
+                message = f"完成 {len(enriched)} 篇中文增强"
+            elif enriched:
+                status = "warning"
+                message = (
+                    f"完成 {len(enriched)} 篇中文增强，"
+                    f"{len(enrich_notes)} 个批次降级为原文摘要"
+                )
+            else:
+                status = "warning"
+                message = "模型未返回可用结果，降级为原文摘要"
+            logger.emit(
+                "enrich",
+                status,
+                message,
                 duration_ms=metrics["enrich"],
                 enriched=len(enriched),
+                degraded_batches=len(enrich_notes),
+                reasons=enrich_notes[:5],
             )
         else:
             metrics["enrich"] = stage()
@@ -164,6 +216,64 @@ def run_pipeline(
             size_bytes=target.stat().st_size if target.exists() else 0,
         )
 
+        # 7. integrated report (LLM-only; the catalog above already succeeded)
+        stage = _timer()
+        report_path = None
+        report_notes: list[str] = []
+        if settings.report_enabled and settings.llm_enabled:
+            logger.emit(
+                "report",
+                "started",
+                "生成中英双语调研报告",
+                model=settings.llm_model,
+                papers=min(len(ranked), settings.report_max_papers),
+                directions=len(plan.get("directions") or []),
+            )
+            try:
+                report_path = build_report(
+                    root,
+                    topic=topic,
+                    plan=plan,
+                    ranked=ranked,
+                    settings=settings,
+                    notes=report_notes,
+                )
+            except Exception as exc:  # noqa: BLE001 - report is optional, catalog stays valid
+                report_notes.append(f"{type(exc).__name__}: {exc}")
+                report_path = None
+            metrics["report"] = stage()
+            if report_path:
+                logger.emit(
+                    "report",
+                    "completed" if not report_notes else "warning",
+                    f"调研报告已生成，共 {len(ranked[: settings.report_max_papers])} 篇文献",
+                    duration_ms=metrics["report"],
+                    output=str(report_path),
+                    notes=report_notes[:8],
+                    size_bytes=report_path.stat().st_size if report_path.exists() else 0,
+                )
+            else:
+                logger.emit(
+                    "report",
+                    "warning",
+                    "调研报告未生成",
+                    duration_ms=metrics["report"],
+                    reasons=report_notes[:8] or ["未知原因"],
+                )
+        else:
+            metrics["report"] = stage()
+            logger.emit(
+                "report",
+                "skipped",
+                "未配置模型或报告生成已关闭，跳过调研报告",
+                duration_ms=metrics["report"],
+            )
+
+        # A report from a previous run describes a different ranked set. Keeping
+        # it would make the console advertise a report this run never produced.
+        if not report_path:
+            summary_file(root).unlink(missing_ok=True)
+
         metrics["total"] = total()
         summary = {
             "run_id": run_id,
@@ -176,8 +286,11 @@ def run_pipeline(
             "records": len(ranked),
             "pending": len(pending),
             "enriched": len(enriched),
+            "enrich_degraded_batches": len(enrich_notes),
             "llm_model": settings.llm_label,
             "catalog": str(target),
+            "report": str(report_path) if report_path else None,
+            "report_notes": report_notes[:8],
         }
         write_json(root / "output" / "run_summary.json", summary)
         save_topic(root, topic)
@@ -191,6 +304,7 @@ def run_pipeline(
             pending=len(pending),
             stage="done",
             catalog=str(target),
+            report=str(report_path) if report_path else None,
         )
         logger.emit(
             "run",
@@ -201,6 +315,7 @@ def run_pipeline(
             pending=len(pending),
             enriched=len(enriched),
             catalog=str(target),
+            report=str(report_path) if report_path else None,
             stage_duration_ms=metrics,
         )
         return summary

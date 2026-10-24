@@ -75,6 +75,10 @@ def create_server(host: str = "127.0.0.1", port: int = 8001):
         json_response=True,
         stateless_http=True,
     )
+    # FastMCP does not expose a version argument; without this the handshake
+    # reports the MCP SDK version (e.g. 1.30.0) instead of ours, which reads
+    # like a stale deployment to anyone inspecting the server.
+    server._mcp_server.version = VERSION
 
     @server.tool(name="list_sources", description="List scholarly sources this deployment can query, with discipline and authority.", structured_output=True)
     def list_sources() -> dict[str, Any]:
@@ -135,7 +139,7 @@ def create_server(host: str = "127.0.0.1", port: int = 8001):
             return {"ok": False, "error": str(exc), "topic": topic}
         return {"ok": True, "topic": topic, "run_id": job.run_id, "status_url": f"/api/runs/{job.run_id}"}
 
-    @server.tool(name="run_topic", description="Create (or reuse) a topic and run the full plan→retrieve→rank→render pipeline, blocking until the catalog is ready.", structured_output=True)
+    @server.tool(name="run_topic", description="Create (or reuse) a topic and run the full plan→retrieve→rank→render→report pipeline, blocking until the catalog and (when an LLM is configured) the bilingual report are ready.", structured_output=True)
     def run_topic(
         name: str,
         keywords: list[str] | None = None,
@@ -175,6 +179,8 @@ def create_server(host: str = "127.0.0.1", port: int = 8001):
             "pending": summary["pending"],
             "duration_ms": summary["duration_ms"],
             "catalog": summary["catalog"],
+            "report": summary.get("report"),
+            "report_notes": summary.get("report_notes") or [],
         }
 
     @server.tool(name="get_topic", description="Read a topic's metadata and its top-ranked records.", structured_output=True)

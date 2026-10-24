@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any, Iterable
 
 SCHEMA_VERSION = "2.0"
+#: Group name for records that fit no planned research direction.
+OTHER_DIRECTION = "其他相关研究"
 CHANNELS = ("paper_sites", "search", "feeds")
 STAGE_DIRS = {
     "intake": "00_intake",

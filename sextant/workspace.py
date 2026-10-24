@@ -29,6 +29,7 @@ from sextant.engine.common import (
     read_json,
     read_jsonl,
     sha1_text,
+    summary_file,
     write_json,
     write_jsonl,
 )
@@ -200,6 +201,36 @@ def record_run(root: Path, run: dict[str, Any]) -> None:
     write_runs(root, runs)
 
 
+def reconcile_stale_runs(settings: Settings) -> list[str]:
+    """Close out runs that the previous process left non-terminal.
+
+    The job registry is in memory, so a crash, a ``--reload`` restart or a
+    closed terminal kills the worker thread but leaves ``runs.json`` holding
+    the last state it wrote. The console would then poll a run that can never
+    finish, and the topic looks permanently busy. Runs are allowed to die, but
+    they must die *visibly*: mark them failed with the reason.
+    """
+    repaired: list[str] = []
+    try:
+        topics = list_topics(settings)
+    except OSError:
+        return repaired
+    for topic in topics:
+        root = topic_dir(settings, topic["topic_id"])
+        runs = read_runs(root)
+        stale = [row for row in runs if row.get("status") in {"queued", "running"}]
+        if not stale:
+            continue
+        for row in stale:
+            row["status"] = "failed"
+            row["stage"] = "interrupted"
+            row["error"] = "服务重启，运行中断"
+            row["finished_at"] = datetime.now(UTC).isoformat(timespec="milliseconds")
+            repaired.append(str(row.get("run_id")))
+        write_runs(root, runs)
+    return repaired
+
+
 def update_run(root: Path, run_id: str, **changes: Any) -> dict[str, Any]:
     runs = read_runs(root)
     for row in runs:
@@ -240,12 +271,18 @@ def catalog_path(root: Path) -> Path:
     return root / CATALOG_FILE
 
 
+def report_path(root: Path) -> Path:
+    """Integrated report, named after the topic like the catalog."""
+    return summary_file(root)
+
+
 def topic_summary(settings: Settings, topic_id: str) -> dict[str, Any]:
     root = topic_dir(settings, topic_id)
     topic = load_topic(root)
     if not topic:
         raise KeyError(topic_id)
     rows = read_ranked(root)
+    report = report_path(root)
     return {
         **topic,
         "root": str(root),
@@ -254,4 +291,6 @@ def topic_summary(settings: Settings, topic_id: str) -> dict[str, Any]:
         "last_run": last_run(root),
         "catalog_exists": catalog_path(root).exists(),
         "catalog_url": f"/api/topics/{topic_id}/catalog" if catalog_path(root).exists() else None,
+        "report_exists": report.exists(),
+        "report_url": f"/api/topics/{topic_id}/report" if report.exists() else None,
     }
