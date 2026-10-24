@@ -247,6 +247,40 @@ def test_build_report_merges_leftovers_into_matching_theme(llm_settings, monkeyp
     assert "基准构建" in theme["summary"]
 
 
+def test_build_report_merges_leftovers_into_model_other_theme(llm_settings, monkeypatch):
+    """No duplicate "other" sections when the model already emitted one."""
+    topic, root = _topic(llm_settings)
+    rows = [_row(1), _row(2), _row(3)]
+    rows[1]["research_direction"] = ""
+    rows[2]["research_direction"] = ""
+    analysis = _analysis(rows)
+    analysis[rows[1]["record_id"]]["method_category"] = ""
+    analysis[rows[2]["record_id"]]["method_category"] = ""
+    synthesis = _synthesis([row["record_id"] for row in rows])
+    synthesis["subthemes"] = [
+        {
+            "title_zh": OTHER_DIRECTION,
+            "title_en": "Other related work",
+            "summary_zh": "该方向保留未能归入主要方法家族的补充证据，其方法与结论请逐篇查看论文卡片。",
+            "summary_en": "Supplementary evidence that could not be grouped into the main families.",
+            "paper_ids": [rows[0]["record_id"]],
+        }
+    ]
+    monkeypatch.setattr("sextant.pipeline.report.analyze_report_papers", lambda *a, **k: analysis)
+    monkeypatch.setattr("sextant.pipeline.report.synthesize_report", lambda *a, **k: synthesis)
+    notes: list[str] = []
+
+    target = build_report(
+        root, topic=topic, plan={}, ranked=rows, settings=llm_settings, notes=notes
+    )
+
+    assert target is not None
+    content_zh = read_json(report_content_zh_file(root), default={})
+    titles = [theme["title"] for theme in content_zh["subthemes"]]
+    assert titles.count(OTHER_DIRECTION) == 1
+    assert set(content_zh["subthemes"][0]["paper_ids"]) == {row["record_id"] for row in rows}
+
+
 def test_build_report_uses_other_only_when_no_method_category(llm_settings, monkeypatch):
     topic, root = _topic(llm_settings)
     rows = [_row(1), _row(2), _row(3)]

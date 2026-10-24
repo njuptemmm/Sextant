@@ -310,7 +310,17 @@ def _normalize_subthemes(
             notes.append(
                 f"{len(leftover)} 篇文献未能归入方法家族，已并入「{FALLBACK_THEME_TITLE}」"
             )
-            themes.append(_fallback_theme(leftover))
+            # The model may already have produced an "other" theme; merge into
+            # it instead of rendering two sections with the same title.
+            existing_other = next(
+                (theme for theme in themes if theme["title_zh"] == FALLBACK_THEME_TITLE), None
+            )
+            if existing_other is not None:
+                existing_other["paper_ids"].extend(
+                    pid for pid in leftover if pid not in existing_other["paper_ids"]
+                )
+            else:
+                themes.append(_fallback_theme(leftover))
     if not themes:
         themes.append(_fallback_theme(list(paper_ids)))
     return themes
