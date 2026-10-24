@@ -4,6 +4,8 @@
 `sextant 0.1.0`、LLM 未配置（`SEXTANT_LLM_*` 为空）。LLM 相关成本是**按 token 估算**，
 不是实测账单，估算口径在下文写明。
 
+一页版图表：[成本与性能](diagrams/07-cost-performance.svg)（[PNG](diagrams/png/07-cost-performance.png)）。
+
 ## 1. 端到端延迟
 
 一次检索链路是 `plan → retrieve → normalize → enrich → rank → render`；调研报告是链路之外的独立任务。

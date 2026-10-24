@@ -2,6 +2,8 @@
 
 设计原则：**失败要局部化、可解释、可恢复**。任何外部依赖出问题，都不能让用户只看到「出错了」。
 
+配图：[异常处理：失败域与降级路径](diagrams/05-error-handling.svg)（[PNG](diagrams/png/05-error-handling.png)）。
+
 ## 1. 失败域划分
 
 ```

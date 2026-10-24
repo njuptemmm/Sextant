@@ -2,6 +2,8 @@
 
 本文说明一次运行从输入到产物的完整链路：任务如何拆解、每一步调用什么工具、上下文与状态放在哪里、失败后如何恢复。
 
+配图：[Agent 执行流程](diagrams/02-agent-flow.svg)（[PNG](diagrams/png/02-agent-flow.png)）。
+
 ## 1. 总览
 
 ```mermaid

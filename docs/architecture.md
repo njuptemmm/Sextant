@@ -1,5 +1,7 @@
 # 系统架构设计
 
+配图：[系统架构](diagrams/01-architecture.svg)、[部署拓扑](diagrams/09-deployment-topology.svg)（[PNG 目录](diagrams/png/)）。
+
 ## 1. 设计目标与约束
 
 | 目标 | 约束 | 设计结果 |

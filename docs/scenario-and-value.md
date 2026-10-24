@@ -2,6 +2,7 @@
 
 > 对应赛道 B 评分项「场景价值与痛点判断」（20 分）。
 > 本文回答四个问题：谁用、痛在哪、现在怎么解决、Sextant 到底多做了什么。
+> 一页版对比图：[场景价值](diagrams/08-value-comparison.svg)（[PNG](diagrams/png/08-value-comparison.png)）。
 
 ---
 

@@ -19,6 +19,8 @@ Sextant 面向需要**持续跟踪某个研究方向**的人：研究生、研�
 | 成本、性能与工程化（10） | [§8](#8-成本与性能) + [docs/cost-and-performance.md](docs/cost-and-performance.md) | 实测延迟、token/成本、瓶颈与优化方向 |
 | 答辩与边界 | [§12](#12-已知限制与下一步) | 已完成目标、未解决问题、下一步计划 |
 
+> 答辩用图表（SVG 源文件 + PNG）与评分项映射见 [docs/diagrams/](docs/diagrams/README.md)。
+
 ---
 
 ## 1. 场景与价值
@@ -152,6 +154,8 @@ flowchart LR
     M --> Core
     M --> Report
 ```
+
+高分辨率版本：[系统架构](docs/diagrams/01-architecture.svg) · [部署拓扑](docs/diagrams/09-deployment-topology.svg) · [全部图表](docs/diagrams/README.md)。
 
 **分层与依赖方向**：`web → api → pipeline → engine`。
 
@@ -397,6 +401,8 @@ sextant/
 │   └── web/index.html       单文件控制台
 ├── tests/                   单元 + API 冒烟测试
 ├── docs/                    架构、Agent 流程、异常、可观测性、成本性能、场景价值、运行证据
+│   └── diagrams/            答辩图表（SVG 源文件 + PNG + 重新生成脚本说明）
+├── scripts/                 render_diagrams.py / render_png.py
 ├── Dockerfile
 ├── docker-compose.yml
 └── README.md

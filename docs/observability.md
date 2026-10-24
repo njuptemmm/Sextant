@@ -2,7 +2,7 @@
 
 系统提供三个层次的可观测性：**实时事件**、**结构化日志**、**运行汇总**。三者来自同一份事件流，数字不会互相矛盾。
 
-一次真实运行的阶段耗时、报告任务事件序列和降级日志摘录见 [evidence.md](evidence.md)。
+一次真实运行的阶段耗时、报告任务事件序列和降级日志摘录见 [evidence.md](evidence.md)。事件从产生到查询的链路见配图：[可观测性](diagrams/06-observability.svg)（[PNG](diagrams/png/06-observability.png)）。
 
 ## 1. 实时事件（SSE）
 
