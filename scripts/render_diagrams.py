@@ -296,7 +296,7 @@ def diagram_agent_flow() -> str:
     rows = [
         ("plan", "查询规划", "选择来源；生成每源检索式；模型可用时扩充同义词", "01_queries/queries.json", "模型失败 → 退回规则检索式"),
         ("retrieve", "多源检索", "每个来源一个线程并行；同源查询串行以尊重限流", "02_raw/search/<source>.jsonl", "单源失败记 warning，其余继续；全失败才终止"),
-        ("normalize", "去重归一", "DOI / 标题指纹去重；合并多源命中与摘要", "pending_verification_articles.jsonl", "摘要不合格 → 待核实区，不参与排序"),
+        ("normalize", "去重归一", "DOI / 标题指纹去重；合并多源命中与摘要", "03_processed/pending_verification_articles.jsonl", "摘要不合格 → 待核实区，不参与排序"),
         ("enrich", "中文增强", "中文标题、中文摘要、一句话结论、研究方向（可选）", "记录字段 + 批次 notes", "单批失败只丢该批；全部失败退回规则模式"),
         ("rank", "相关性排序", "关键词 40 + 标题 10 + 引用 20 + 时效 20 + 跨源 5 + 质量 5", "03_processed/ranked_articles.jsonl", "纯函数，无外部依赖"),
         ("render", "目录生成", "分组、筛选、中英对照，写入自包含 HTML", "output/catalog.html", "中文质量门控失败 → 降级渲染并告警"),
@@ -552,7 +552,7 @@ def diagram_observability() -> str:
 def diagram_cost_performance() -> str:
     out = [title_block(
         "成本与性能：实测数据",
-        "无模型时 1–2 秒；开启中文增强约 128 秒；报告是独立的 1–2 分钟任务",
+        "无模型时通常 1–2 秒（网络异常 5–6 秒）；开启中文增强约 128 秒；报告是独立的 1–2 分钟任务",
         [("检索", BLUE), ("增强 / 报告", AMBER), ("成本", TEAL)],
     )]
     # panel A: stacked bar
