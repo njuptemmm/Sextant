@@ -9,6 +9,7 @@ from typing import Any
 from sextant.config import Settings
 from sextant.pipeline.runner import new_run_id, run_pipeline
 from sextant.runlog import utc_now_iso
+from sextant.workspace import WorkspaceError, topic_dir
 
 
 class JobConflict(RuntimeError):
@@ -47,6 +48,18 @@ class JobRegistry:
             job = Job(run_id=new_run_id(), topic_id=topic_id)
             self._jobs[job.run_id] = job
             self._active[topic_id] = job.run_id
+
+        # Create the log before the caller can subscribe to the event stream.
+        # The worker thread needs a moment to start; without this the console's
+        # first SSE connection races the worker and gets a 404.
+        try:
+            log_dir = topic_dir(settings, topic_id) / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            (log_dir / f"{job.run_id}.jsonl").touch(exist_ok=True)
+        except (OSError, WorkspaceError):
+            # A real filesystem problem will surface from the run itself.
+            pass
+
         thread = threading.Thread(
             target=self._execute,
             args=(settings, job.run_id, topic_id),

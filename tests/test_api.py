@@ -66,3 +66,37 @@ def test_invalid_date_returns_400(client, no_network):
         json={"name": "Bad Window", "from_date": "2024/01/01"},
     )
     assert response.status_code == 400
+
+
+def test_start_creates_log_before_worker_runs(settings, monkeypatch):
+    """The console subscribes immediately after POST; the log must already exist."""
+    import sextant.api.jobs as jobs_module
+
+    monkeypatch.setattr(jobs_module, "run_pipeline", lambda *args, **kwargs: {"records": 0})
+    registry = JobRegistry()
+
+    job = registry.start(settings, "fresh-topic")
+
+    log_file = settings.workspace_root / "fresh-topic" / "logs" / f"{job.run_id}.jsonl"
+    assert log_file.exists()
+
+
+def test_events_replays_finished_run(client, settings, no_network):
+    client.post("/api/topics", json={"name": "Replay Topic"})
+    log_file = settings.workspace_root / "replay-topic" / "logs" / "run-test.jsonl"
+    log_file.write_text(
+        '{"seq": 1, "run_id": "run-test", "topic_id": "replay-topic", '
+        '"stage": "run", "status": "completed", "message": "完成"}\n',
+        encoding="utf-8",
+    )
+
+    response = client.get("/api/topics/replay-topic/events?run_id=run-test")
+
+    assert response.status_code == 200
+    assert "completed" in response.text
+
+
+def test_events_unknown_run_returns_404(client, no_network):
+    client.post("/api/topics", json={"name": "Unknown Run"})
+    response = client.get("/api/topics/unknown-run/events?run_id=missing-run")
+    assert response.status_code == 404

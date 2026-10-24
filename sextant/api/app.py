@@ -160,7 +160,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="该主题还没有运行记录")
         log_file = root / "logs" / f"{selected}.jsonl"
         if not log_file.exists():
-            raise HTTPException(status_code=404, detail=f"找不到运行日志：{selected}")
+            from sextant.api.jobs import REGISTRY
+
+            job = REGISTRY.get(selected)
+            running = job is not None and job.status in {"queued", "running"}
+            if not running:
+                raise HTTPException(status_code=404, detail=f"找不到运行日志：{selected}")
+            # A just-started run may not have written its first line yet; stream
+            # anyway so the console keeps its connection instead of retrying.
 
         def stream() -> Iterator[str]:
             try:

@@ -73,6 +73,14 @@ class RunLogger:
     on_event: Callable[[dict[str, Any]], None] | None = None
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
+    def __post_init__(self) -> None:
+        # Create the file up front: the console opens the SSE stream the moment
+        # a run is accepted, and an empty log is a valid "no events yet" state.
+        # Without this the stream endpoint could not tell "run just started"
+        # from "unknown run" and answered 404 on the first connection.
+        self.log_file.parent.mkdir(parents=True, exist_ok=True)
+        self.log_file.touch(exist_ok=True)
+
     @property
     def log_file(self) -> Path:
         return self.topic_root / "logs" / f"{self.run_id}.jsonl"
