@@ -1,0 +1,12 @@
+# Runtime dependencies. Versions are ranges so a clean install stays reproducible
+# without freezing transitive packages.
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.30,<1.0
+pydantic>=2.7,<3.0
+mcp>=1.2,<2.0
+python-dotenv>=1.0,<2.0
+
+# Development / test only
+pytest>=8.0
+httpx>=0.27
+ruff>=0.6

@@ -1,0 +1,26 @@
+# Keep the build context small: only the package, metadata and docs are needed.
+.git
+.gitignore
+.venv
+venv
+__pycache__
+*.py[cod]
+*.egg-info
+build
+dist
+
+# Local runtime state must never enter the image; it is a mounted volume.
+workspace
+logs
+*.log
+
+# Tooling caches
+.pytest_cache
+.ruff_cache
+.coverage
+htmlcov
+
+# Local secrets
+.env
+.env.*
+!.env.example
