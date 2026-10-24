@@ -27,6 +27,16 @@ def test_health(client):
     assert body["workspace_writable"] is True
 
 
+def test_console_supports_persistent_light_dark_theme(client):
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert 'id="themeToggle"' in response.text
+    assert 'aria-label="切换日间/夜间模式"' in response.text
+    assert "sextant-theme" in response.text
+    assert 'data-theme="dark"' in response.text
+
+
 def test_create_and_list_topic(client, no_network):
     response = client.post(
         "/api/topics",

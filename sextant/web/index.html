@@ -6,121 +6,231 @@
 <title>Sextant · 研究情报追踪</title>
 <link rel="icon" href="data:,">
 
+<meta name="color-scheme" content="light dark">
+<script>
+  // Set the theme before paint so a saved dark preference never flashes white.
+  (() => {
+    let saved = null;
+    try { saved = localStorage.getItem("sextant-theme"); } catch { /* storage may be unavailable */ }
+    document.documentElement.dataset.theme = saved === "light" || saved === "dark"
+      ? saved
+      : (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+  })();
+</script>
 <style>
   :root{
-    --bg:#f5f6f8; --panel:#ffffff; --ink:#101828; --muted:#667085; --line:#e4e7ec;
-    --accent:#1d4ed8; --accent-soft:#eef2ff; --ok:#067647; --ok-soft:#ecfdf3;
-    --warn:#b54708; --warn-soft:#fffaeb; --bad:#b42318; --bad-soft:#fef3f2;
-    --radius:12px; --shadow:0 1px 2px rgba(16,24,40,.06),0 1px 3px rgba(16,24,40,.1);
+    color-scheme:light;
+    --bg:#f3f6fa; --panel:rgba(255,255,255,.92); --panel-solid:#fff; --panel-subtle:#f7f9fc;
+    --ink:#1b2638; --heading:#101b2d; --muted:#69768a; --line:#e0e6ee; --line-strong:#cbd5e1;
+    --accent:#3157d5; --accent-strong:#3157d5; --accent-hover:#2546ba; --accent-soft:#edf1ff;
+    --accent-rgb:49,87,213; --on-accent:#fff;
+    --ok:#087a52; --ok-ink:#05603f; --ok-soft:#ebf8f1; --ok-line:#b9e4cf;
+    --warn:#a15a08; --warn-soft:#fff7e8; --warn-line:#f1d49b;
+    --bad:#bd342b; --bad-ink:#9e2c25; --bad-soft:#fff1f0; --bad-line:#f1c1bd;
+    --radius:18px; --shadow:0 1px 2px rgba(20,32,55,.03),0 12px 36px rgba(20,32,55,.055);
+  }
+  [data-theme="dark"]{
+    color-scheme:dark;
+    --bg:#0b111b; --panel:rgba(18,26,39,.94); --panel-solid:#121a27; --panel-subtle:#172131;
+    --ink:#dbe3ef; --heading:#f3f6fb; --muted:#94a2b7; --line:#273347; --line-strong:#3a4960;
+    --accent:#9bb0ff; --accent-strong:#6685ed; --accent-hover:#7d98f2; --accent-soft:#1d2944;
+    --accent-rgb:102,133,237; --on-accent:#fff;
+    --ok:#62d6a5; --ok-ink:#8be3ba; --ok-soft:#112c27; --ok-line:#245343;
+    --warn:#efbb6b; --warn-soft:#2c2418; --warn-line:#594426;
+    --bad:#f09a94; --bad-ink:#f3aaa5; --bad-soft:#311d20; --bad-line:#613438;
+    --shadow:0 1px 2px rgba(0,0,0,.18),0 18px 48px rgba(0,0,0,.2);
   }
   *{box-sizing:border-box}
-  body{margin:0;background:var(--bg);color:var(--ink);
-    font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;}
-  button{font:inherit}
-  .shell{max-width:1360px;margin:0 auto;padding:20px 24px 48px}
-  header.top{display:flex;align-items:center;gap:16px;padding:8px 0 20px}
-  .brand{display:flex;align-items:center;gap:12px}
-  .mark{width:38px;height:38px;border-radius:11px;background:linear-gradient(145deg,#1d4ed8,#0b2a7a);
-    display:grid;place-items:center;color:#fff;font-weight:700;font-size:19px;letter-spacing:-.5px}
-  .brand h1{margin:0;font-size:19px;letter-spacing:-.2px}
-  .brand p{margin:0;color:var(--muted);font-size:12.5px}
-  .badges{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}
-  .badge{display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border:1px solid var(--line);
-    border-radius:999px;background:var(--panel);font-size:12px;color:var(--muted)}
-  .dot{width:7px;height:7px;border-radius:50%;background:var(--muted)}
-  .dot.ok{background:var(--ok)} .dot.warn{background:var(--warn)} .dot.bad{background:var(--bad)}
-  .grid{display:grid;grid-template-columns:340px minmax(0,1fr);gap:18px;align-items:start}
-  .panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow)}
-  .panel-head{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--line)}
-  .panel-head h2{margin:0;font-size:14px;font-weight:650}
-  .panel-body{padding:16px}
-  .field{margin-bottom:13px}
-  .field label{display:block;font-size:12.5px;color:var(--muted);margin-bottom:5px}
-  .field input,.field textarea{width:100%;padding:9px 11px;border:1px solid var(--line);border-radius:9px;
-    background:#fff;color:var(--ink);font:inherit;outline:none;transition:border-color .15s,box-shadow .15s}
-  .field input:focus,.field textarea:focus{border-color:#93b4ff;box-shadow:0 0 0 3px rgba(29,78,216,.1)}
-  .field textarea{resize:vertical;min-height:64px}
-  .hint{font-size:12px;color:var(--muted);margin-top:4px}
-  .row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-  .btn{display:inline-flex;align-items:center;justify-content:center;gap:7px;padding:9px 14px;border-radius:9px;
-    border:1px solid transparent;background:var(--accent);color:#fff;font-weight:600;cursor:pointer;transition:.15s}
-  .btn:hover{background:#1a45c0}
-  .btn:disabled{opacity:.55;cursor:not-allowed}
-  .btn.ghost{background:#fff;border-color:var(--line);color:var(--ink);font-weight:550}
-  .btn.ghost:hover{background:#f9fafb}
-  .btn.wide{width:100%}
-  .topic-list{display:flex;flex-direction:column;gap:2px;max-height:420px;overflow:auto}
-  .topic{display:block;width:100%;text-align:left;padding:11px 16px;border:0;background:transparent;
-    border-left:3px solid transparent;cursor:pointer}
-  .topic:hover{background:#f9fafb}
-  .topic.active{background:var(--accent-soft);border-left-color:var(--accent)}
-  .topic .t-name{font-weight:600;font-size:13.5px;display:flex;align-items:center;gap:8px}
-  .topic .t-meta{font-size:12px;color:var(--muted);margin-top:2px}
-  .tag{font-size:11px;padding:1px 7px;border-radius:999px;background:#f2f4f7;color:var(--muted);font-weight:500}
+  html{scroll-behavior:smooth}
+  body{margin:0;min-width:320px;background:
+    radial-gradient(900px 480px at 8% -10%,rgba(var(--accent-rgb),.09),transparent 65%),
+    radial-gradient(700px 420px at 100% 0%,rgba(20,148,137,.055),transparent 62%),var(--bg);
+    color:var(--ink);font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    -webkit-font-smoothing:antialiased;transition:background-color .2s,color .2s}
+  button,input,textarea{font:inherit}
+  button:focus-visible,a:focus-visible,input:focus-visible,textarea:focus-visible,summary:focus-visible{outline:3px solid rgba(var(--accent-rgb),.28);outline-offset:3px}
+  .shell{max-width:1440px;margin:0 auto;padding:24px 30px 56px}
+  header.top{display:flex;align-items:center;gap:16px;padding:4px 0 28px}
+  .brand{display:flex;align-items:center;gap:13px;min-width:0}
+  .mark{width:44px;height:44px;flex:0 0 auto;border-radius:14px;background:linear-gradient(145deg,#4165df,#203a9b);
+    display:grid;place-items:center;color:#fff;box-shadow:0 8px 22px rgba(49,87,213,.22)}
+  .mark svg{width:26px;height:26px}
+  .brand h1{margin:0;color:var(--heading);font-size:20px;line-height:1.3;letter-spacing:-.35px}
+  .brand p{margin:3px 0 0;color:var(--muted);font-size:12.5px}
+  .badges{margin-left:auto;display:flex;justify-content:flex-end;gap:7px;flex-wrap:wrap}
+  .badge{display:inline-flex;align-items:center;gap:7px;min-height:32px;padding:5px 11px;border:1px solid var(--line);
+    border-radius:999px;background:var(--panel);font-size:12px;color:var(--muted);box-shadow:0 2px 8px rgba(20,32,55,.025)}
+  .dot{width:7px;height:7px;flex:0 0 auto;border-radius:50%;background:var(--muted)}
+  .dot.ok{background:var(--ok);box-shadow:0 0 0 4px color-mix(in srgb,var(--ok) 12%,transparent)}
+  .dot.warn{background:var(--warn)} .dot.bad{background:var(--bad)}
+  .theme-toggle{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:36px;padding:7px 12px;
+    border:1px solid var(--line);border-radius:11px;background:var(--panel);color:var(--ink);cursor:pointer;
+    font-size:12.5px;font-weight:600;white-space:nowrap;transition:border-color .16s,background .16s,transform .16s}
+  .theme-toggle:hover{border-color:var(--line-strong);background:var(--panel-subtle);transform:translateY(-1px)}
+  .theme-toggle svg{width:17px;height:17px;flex:0 0 auto}
+  .theme-toggle .moon-icon,[data-theme="dark"] .theme-toggle .sun-icon{display:none}
+  [data-theme="dark"] .theme-toggle .moon-icon{display:block}
+  .grid{display:grid;grid-template-columns:350px minmax(0,1fr);gap:22px;align-items:start}
+  .sidebar{min-width:0}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);backdrop-filter:blur(16px)}
+  .panel-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:17px 20px;border-bottom:1px solid var(--line)}
+  .panel-head h2{margin:0;color:var(--heading);font-size:14px;font-weight:700;letter-spacing:-.1px}
+  .panel-body{padding:20px}
+  .field{margin-bottom:15px}
+  .field label{display:block;font-size:12.5px;color:var(--ink);font-weight:600;margin-bottom:6px}
+  .field input,.field textarea{width:100%;padding:10px 12px;border:1px solid var(--line-strong);border-radius:10px;
+    background:var(--panel-solid);color:var(--ink);outline:none;transition:border-color .15s,box-shadow .15s,background .15s}
+  .field input::placeholder,.field textarea::placeholder{color:var(--muted);opacity:.72}
+  .field input:hover,.field textarea:hover{border-color:color-mix(in srgb,var(--accent) 45%,var(--line-strong))}
+  .field input:focus,.field textarea:focus{border-color:var(--accent-strong);box-shadow:0 0 0 4px rgba(var(--accent-rgb),.11)}
+  .field textarea{resize:vertical;min-height:72px}
+  .hint{font-size:12px;color:var(--muted);margin-top:5px;line-height:1.5}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:11px}
+  .btn{display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:38px;padding:9px 14px;border-radius:10px;
+    border:1px solid transparent;background:var(--accent-strong);color:var(--on-accent);font-weight:650;cursor:pointer;
+    box-shadow:0 3px 9px rgba(var(--accent-rgb),.13);transition:background .16s,border-color .16s,transform .16s,box-shadow .16s}
+  .btn:hover{background:var(--accent-hover);transform:translateY(-1px);box-shadow:0 5px 14px rgba(var(--accent-rgb),.18)}
+  .btn:active{transform:translateY(0)}
+  .btn:disabled{opacity:.48;cursor:not-allowed;transform:none;box-shadow:none}
+  .btn.ghost{background:var(--panel-solid);border-color:var(--line);color:var(--ink);font-weight:600;box-shadow:none}
+  .btn.ghost:hover{background:var(--panel-subtle);border-color:var(--line-strong)}
+  .btn.wide{width:100%;min-height:42px;margin-top:2px}
+  .btn[hidden]{display:none}
+  .topic-list{display:flex;flex-direction:column;gap:5px;max-height:430px;overflow:auto;padding:9px;scrollbar-width:thin;scrollbar-color:var(--line-strong) transparent}
+  .topic{display:block;width:100%;text-align:left;padding:12px 13px;border:1px solid transparent;background:transparent;
+    border-radius:11px;color:var(--ink);cursor:pointer;transition:background .15s,border-color .15s}
+  .topic:hover{background:var(--panel-subtle);border-color:var(--line)}
+  .topic.active{background:var(--accent-soft);border-color:rgba(var(--accent-rgb),.22)}
+  .topic .t-name{font-weight:650;font-size:13.5px;display:flex;align-items:center;justify-content:space-between;gap:8px;color:var(--heading)}
+  .topic .t-meta{font-size:11.5px;color:var(--muted);margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .tag{flex:0 0 auto;font-size:10.5px;padding:2px 7px;border-radius:999px;background:var(--panel-subtle);color:var(--muted);font-weight:600}
   .tag.running{background:var(--accent-soft);color:var(--accent)}
   .tag.done{background:var(--ok-soft);color:var(--ok)}
   .tag.failed{background:var(--bad-soft);color:var(--bad)}
-  .empty{padding:28px 16px;text-align:center;color:var(--muted);font-size:13px}
-  .work{padding:18px 20px 22px}
-  .work-head{display:flex;align-items:flex-start;gap:14px;flex-wrap:wrap;margin-bottom:16px}
-  .work-head h2{margin:0 0 3px;font-size:17px;letter-spacing:-.2px}
-  .work-head p{margin:0;color:var(--muted);font-size:12.5px}
-  .work-actions{margin-left:auto;display:flex;gap:8px}
-  .stages{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-bottom:16px}
-  .stage{border:1px solid var(--line);border-radius:10px;padding:9px 10px;background:#fff;min-width:0}
-  .stage .s-name{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px}
-  .stage .s-state{font-size:12.5px;font-weight:600;margin-top:3px}
-  .stage.running{border-color:#93b4ff;background:var(--accent-soft)}
+  .empty{padding:32px 18px;text-align:center;color:var(--muted);font-size:13px}
+  .work{padding:24px 26px 26px;min-width:0}
+  .work-head{display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap;margin-bottom:20px}
+  .eyebrow{margin-bottom:6px;color:var(--accent);font-size:10px;font-weight:800;letter-spacing:.16em}
+  .work-head h2{margin:0 0 4px;color:var(--heading);font-size:21px;line-height:1.3;letter-spacing:-.35px;overflow-wrap:anywhere}
+  .work-head p{margin:0;color:var(--muted);font-size:12.5px;overflow-wrap:anywhere}
+  .work-actions{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}
+  .stages{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:9px;margin-bottom:18px}
+  .stage{position:relative;border:1px solid var(--line);border-radius:12px;padding:12px 11px;background:var(--panel-subtle);min-width:0;overflow:hidden;transition:border-color .2s,background .2s}
+  .stage::after{content:"";position:absolute;inset:auto 0 0;height:2px;background:transparent}
+  .stage .s-name{font-size:11.5px;color:var(--muted);display:flex;align-items:center;justify-content:space-between;gap:5px;white-space:nowrap}
+  .s-index{font-size:9px;font-weight:700;letter-spacing:.08em;opacity:.65;font-variant-numeric:tabular-nums}
+  .stage .s-state{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:650;margin-top:7px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink)}
+  .state-dot{width:5px;height:5px;flex:0 0 auto;border-radius:50%;background:var(--line-strong)}
+  .stage.running{border-color:rgba(var(--accent-rgb),.45);background:var(--accent-soft)}
+  .stage.running::after{background:var(--accent-strong)}
   .stage.running .s-state{color:var(--accent)}
-  .stage.done{border-color:#a6f4c5;background:var(--ok-soft)}
-  .stage.done .s-state{color:var(--ok)}
-  .stage.warning{border-color:#fedf89;background:var(--warn-soft)}
-  .stage.warning .s-state{color:var(--warn)}
-  .stage.failed{border-color:#fecdca;background:var(--bad-soft)}
-  .stage.failed .s-state{color:var(--bad)}
-  .sysline{border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:#fbfcfd;
-    margin-bottom:16px;font-size:12.5px;color:var(--muted);display:flex;gap:16px;flex-wrap:wrap}
-  .sysline strong{color:var(--ink);font-weight:600}
-  .alert{display:none;border:1px solid #fecdca;background:var(--bad-soft);color:#7a271a;border-radius:10px;
-    padding:11px 13px;margin-bottom:14px;font-size:13px}
+  .stage.running .state-dot{background:var(--accent-strong);box-shadow:0 0 0 4px rgba(var(--accent-rgb),.12);animation:pulse 1.8s ease-in-out infinite}
+  .stage.done{border-color:var(--ok-line);background:var(--ok-soft)}
+  .stage.done::after{background:var(--ok)}
+  .stage.done .s-state{color:var(--ok)} .stage.done .state-dot{background:var(--ok)}
+  .stage.warning{border-color:var(--warn-line);background:var(--warn-soft)}
+  .stage.warning::after{background:var(--warn)}
+  .stage.warning .s-state{color:var(--warn)} .stage.warning .state-dot{background:var(--warn)}
+  .stage.failed{border-color:var(--bad-line);background:var(--bad-soft)}
+  .stage.failed::after{background:var(--bad)}
+  .stage.failed .s-state{color:var(--bad)} .stage.failed .state-dot{background:var(--bad)}
+  @keyframes pulse{50%{box-shadow:0 0 0 7px rgba(var(--accent-rgb),0)}}
+  .sysline{display:grid;grid-template-columns:.8fr .7fr .8fr minmax(150px,1.7fr);border:1px solid var(--line);border-radius:12px;
+    padding:12px 0;background:var(--panel-subtle);margin-bottom:18px;color:var(--muted)}
+  .sysline>span{display:flex;flex-direction:column;gap:2px;min-width:0;padding:0 14px;font-size:10.5px;letter-spacing:.03em}
+  .sysline>span+span{border-left:1px solid var(--line)}
+  .sysline strong{color:var(--heading);font-size:12.5px;font-weight:650;letter-spacing:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .alert{display:none;border:1px solid var(--bad-line);background:var(--bad-soft);color:var(--bad-ink);border-radius:12px;
+    padding:12px 14px;margin-bottom:16px;font-size:13px}
   .alert.show{display:block}
-  .alert .hint{margin-top:4px;color:#912018}
-  .logbox{border:1px solid var(--line);border-radius:10px;overflow:hidden}
-  .logbox .lb-head{display:flex;align-items:center;gap:10px;padding:9px 13px;border-bottom:1px solid var(--line);
-    background:#fbfcfd;font-size:12.5px;color:var(--muted)}
+  .alert .hint{margin-top:4px;color:var(--bad-ink);opacity:.82}
+  .logbox{border:1px solid var(--line);border-radius:13px;overflow:hidden;background:var(--panel-solid)}
+  .logbox .lb-head{display:flex;align-items:center;gap:10px;padding:11px 14px;border-bottom:1px solid var(--line);
+    background:var(--panel-subtle);font-size:12.5px;color:var(--muted)}
+  .logbox .lb-head>span:first-child{color:var(--ink);font-weight:650}
   .logbox .lb-head .spacer{margin-left:auto}
-  .log{max-height:420px;overflow:auto;padding:8px 4px 14px;font-size:12.5px}
-  .ev{display:grid;grid-template-columns:70px 92px minmax(0,1fr) 64px;gap:10px;padding:6px 13px;
-    border-bottom:1px dashed #eef0f3;align-items:baseline}
+  #liveState{display:inline-flex;align-items:center;gap:6px;font-size:11.5px}
+  #liveState::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--line-strong)}
+  .log{max-height:420px;min-height:116px;overflow:auto;padding:7px 4px 12px;font-size:12.5px;scrollbar-width:thin;scrollbar-color:var(--line-strong) transparent}
+  .ev{display:grid;grid-template-columns:70px 92px minmax(0,1fr) 70px;gap:10px;padding:7px 13px;
+    border-bottom:1px dashed var(--line);align-items:baseline}
   .ev:last-child{border-bottom:0}
-  .ev .time{color:#98a2b3;font-variant-numeric:tabular-nums}
-  .ev .st{font-weight:600;font-size:12px}
-  .ev .msg{color:#344054;word-break:break-word}
-  .ev .dur{text-align:right;color:#98a2b3;font-variant-numeric:tabular-nums}
+  .ev .time{color:var(--muted);opacity:.75;font-variant-numeric:tabular-nums;font-size:11.5px}
+  .ev .st{font-weight:650;font-size:11.5px}
+  .ev .msg{color:var(--ink);word-break:break-word}
+  .ev .dur{text-align:right;color:var(--muted);opacity:.75;font-variant-numeric:tabular-nums;font-size:11px}
   .ev.warning .st{color:var(--warn)}
   .ev.failed .st,.ev.failed .msg{color:var(--bad)}
   .ev.completed .st{color:var(--ok)}
   .ev.running .st{color:var(--accent)}
-  .catalog-card{display:none;margin-top:16px;border:1px solid #a6f4c5;background:var(--ok-soft);
-    border-radius:10px;padding:14px 16px;align-items:center;gap:14px}
+  .catalog-card{display:none;margin-top:18px;border:1px solid var(--ok-line);background:var(--ok-soft);
+    border-radius:14px;padding:16px;align-items:center;gap:13px}
   .catalog-card.show{display:flex}
-  .catalog-card .cc-text{font-size:13px;color:#05603a}
-  .catalog-card .cc-text strong{display:block;color:#054f31;font-size:14px}
-  .catalog-card .btn{margin-left:auto;background:var(--ok)}
-  .catalog-card .btn:hover{background:#05603a}
-  .catalog-card #reportLink{margin-left:auto;background:transparent;color:var(--ok);border:1px solid var(--ok)}
-  .catalog-card #reportLink:hover{background:rgba(5,96,58,.08)}
-  .catalog-card #catalogLink{margin-left:8px}
+  .artifact-icon{display:grid;place-items:center;width:38px;height:38px;flex:0 0 auto;border-radius:11px;background:var(--panel-solid);color:var(--ok);border:1px solid var(--ok-line)}
+  .artifact-icon svg{width:20px;height:20px}
+  .catalog-card .cc-text{min-width:0;font-size:12.5px;color:var(--ok-ink)}
+  .catalog-card .cc-text strong{display:block;color:var(--ok-ink);font-size:13.5px;margin-bottom:2px}
+  .catalog-card .btn{margin-left:auto;background:var(--ok);flex:0 0 auto}
+  [data-theme="dark"] .catalog-card .btn{color:#0b241c}
+  .catalog-card .btn:hover{background:var(--ok);filter:brightness(.92)}
+  .report-card{display:none;margin-top:12px;border:1px solid var(--line);border-radius:14px;background:var(--panel-subtle);padding:16px}
+  .report-card.show{display:block}
+  .rc-head{display:flex;align-items:center;gap:13px;flex-wrap:wrap}
+  .rc-head .artifact-icon{color:var(--accent);border-color:var(--line)}
+  .rc-head .rc-text{min-width:0;flex:1 1 220px}
+  .rc-head strong{display:block;font-size:13.5px;color:var(--heading);margin-bottom:2px}
+  .rc-head span{font-size:12.5px;color:var(--muted)}
+  .rc-actions{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}
+  .report-log{display:none;margin-top:12px;padding:9px 11px;border:1px dashed var(--line);border-radius:9px;
+    max-height:150px;overflow:auto;font-size:12px;color:var(--muted);background:var(--panel-solid)}
+  .report-log.show{display:block}
+  .report-log .rev{padding:3px 0}
+  @media (min-width:1041px){.sidebar{position:sticky;top:20px}}
+  @media (max-width:1180px){.stages{grid-template-columns:repeat(3,1fr)}}
   @media (max-width:1040px){
+    .shell{padding:20px 22px 44px}
     .grid{grid-template-columns:1fr}
-    .stages{grid-template-columns:repeat(3,1fr)}
+    .sidebar{display:grid;grid-template-columns:minmax(280px,.85fr) minmax(300px,1.15fr);gap:18px}
+    .sidebar .panel+ .panel{margin-top:0!important}
+    .topic-list{max-height:360px}
   }
-  @media (max-width:640px){
-    .shell{padding:12px}
+  @media (max-width:760px){
+    header.top{align-items:flex-start;flex-wrap:wrap}
+    .badges{margin-left:0;order:3;width:100%;justify-content:flex-start}
+    .theme-toggle{margin-left:auto}
+    .sidebar{display:block}
+    .sidebar .panel+ .panel{margin-top:16px!important}
+    .work{padding:20px}
+    .sysline{grid-template-columns:1fr 1fr;row-gap:12px}
+    .sysline>span:nth-child(3){border-left:0}
+    .catalog-card{align-items:flex-start;flex-wrap:wrap}
+    .catalog-card .btn{margin-left:51px}
+  }
+  @media (max-width:560px){
+    .shell{padding:14px 12px 36px}
+    header.top{padding-bottom:20px;gap:12px}
+    .brand p{max-width:230px}
+    .mark{width:40px;height:40px;border-radius:12px}
+    .brand h1{font-size:18px}
+    .theme-toggle{padding:7px 10px}
+    .theme-toggle span{display:none}
+    .badge{font-size:11px}
     .row{grid-template-columns:1fr}
     .stages{grid-template-columns:repeat(2,1fr)}
-    .ev{grid-template-columns:60px minmax(0,1fr)}
+    .work-head{display:block}
+    .work-actions{margin:14px 0 0}
+    .ev{grid-template-columns:58px minmax(0,1fr);gap:8px}
     .ev .st,.ev .dur{display:none}
+    .rc-actions{width:100%;margin-left:51px}
+    .result-line{flex-direction:column}
+  }
+  @media (prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;animation:none!important;transition:none!important}}
+  @media print{
+    body{background:#fff;color:#172033}
+    .shell{max-width:none;padding:0}
+    header.top{padding-bottom:14px}
+    .theme-toggle,.work-actions,.btn{display:none!important}
+    .panel{box-shadow:none;background:#fff}
   }
 </style>
 </head>
@@ -128,10 +238,15 @@
 <div class="shell">
   <header class="top">
     <div class="brand">
-      <div class="mark">S</div>
+      <div class="mark" aria-hidden="true">
+        <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M5 24 25 5M8 21a12 12 0 0 1 13-13M5 24h16M16 4v5M4 16h5M23 23l4 4"/>
+          <circle cx="16" cy="16" r="2.4" fill="currentColor" stroke="none"/>
+        </svg>
+      </div>
       <div>
-        <h1>Sextant · 六分仪</h1>
-        <p>多源学术检索 · 证据排序 · 可追溯目录</p>
+        <h1>Sextant <span style="font-weight:500;color:var(--muted)">/ 六分仪</span></h1>
+        <p>从多源学术证据，到可解释的研究判断</p>
       </div>
     </div>
     <div class="badges">
@@ -139,10 +254,15 @@
       <span class="badge" id="llmBadge">模型：—</span>
       <span class="badge" id="versionBadge">v—</span>
     </div>
+    <button class="theme-toggle" id="themeToggle" type="button" aria-label="切换日间/夜间模式" aria-pressed="false" title="切换日间/夜间模式">
+      <svg class="sun-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.66 6.34l1.41-1.41"/></svg>
+      <svg class="moon-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.5 14.2A8.5 8.5 0 0 1 9.8 3.5 8.5 8.5 0 1 0 20.5 14.2Z"/></svg>
+      <span id="themeLabel">夜间模式</span>
+    </button>
   </header>
 
   <div class="grid">
-    <div>
+    <div class="sidebar">
       <section class="panel">
         <div class="panel-head"><h2>新建追踪主题</h2></div>
         <div class="panel-body">
@@ -194,7 +314,8 @@
       <div class="work" id="work">
         <div class="work-head">
           <div>
-            <h2 id="workTitle">运行时间线</h2>
+            <div class="eyebrow">RESEARCH WORKSPACE</div>
+            <h2 id="workTitle">研究运行台</h2>
             <p id="workSub">选择一个主题查看执行过程，或新建主题开始第一次检索。</p>
           </div>
           <div class="work-actions">
@@ -229,12 +350,31 @@
         </div>
 
         <div class="catalog-card" id="catalogCard">
+          <div class="artifact-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V3H6.5A2.5 2.5 0 0 0 4 5.5v14Z"/><path d="M4 19.5A2.5 2.5 0 0 0 6.5 22H20v-5M9 8h7M9 12h5"/></svg>
+          </div>
           <div class="cc-text">
             <strong>证据目录已生成</strong>
             <span id="catalogMeta">可直接打开查看筛选与中英摘要。</span>
           </div>
-          <button class="btn" id="reportLink" type="button" disabled>调研报告 →</button>
           <button class="btn" id="catalogLink" type="button">打开目录 →</button>
+        </div>
+
+        <div class="report-card" id="reportCard">
+          <div class="rc-head">
+            <div class="artifact-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6M8 13h8M8 17h6"/></svg>
+            </div>
+            <div class="rc-text">
+              <strong>综合调研报告</strong>
+              <span id="reportMeta">尚未生成；报告依赖模型，约需 1–2 分钟。</span>
+            </div>
+            <div class="rc-actions">
+              <button class="btn" id="reportBtn" type="button" disabled>生成调研报告</button>
+              <button class="btn ghost" id="reportRegenBtn" type="button" hidden>重新生成</button>
+            </div>
+          </div>
+          <div class="report-log" id="reportLog"></div>
         </div>
       </div>
     </section>
@@ -249,21 +389,51 @@ const STAGES = [
   ["enrich","中文增强"],
   ["rank","相关性排序"],
   ["render","目录生成"],
-  ["report","调研报告"],
 ];
-const state = { topic:null, runId:null, source:null, finished:false };
+const state = {
+  topic:null, runId:null, source:null, finished:false,
+  reportRunId:null, reportSource:null, reportBusy:false, reportExists:false,
+};
 
 const $ = (id) => document.getElementById(id);
 const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (ch) => (
   {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[ch]
 ));
 
+const THEME_KEY = "sextant-theme";
+const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
+
+function storedTheme(){
+  try {
+    const value = localStorage.getItem(THEME_KEY);
+    return value === "light" || value === "dark" ? value : null;
+  } catch { return null; }
+}
+
+function applyTheme(theme, persist = false){
+  document.documentElement.dataset.theme = theme;
+  const dark = theme === "dark";
+  $("themeToggle").setAttribute("aria-pressed", String(dark));
+  $("themeLabel").textContent = dark ? "日间模式" : "夜间模式";
+  if (persist){
+    try { localStorage.setItem(THEME_KEY, theme); } catch { /* the visual toggle still works */ }
+  }
+}
+
+applyTheme(document.documentElement.dataset.theme || (systemTheme.matches ? "dark" : "light"));
+$("themeToggle").addEventListener("click", () => {
+  applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark", true);
+});
+systemTheme.addEventListener("change", (event) => {
+  if (!storedTheme()) applyTheme(event.matches ? "dark" : "light");
+});
+
 function renderStages(map = {}){
-  $("stages").innerHTML = STAGES.map(([key,label]) => {
+  $("stages").innerHTML = STAGES.map(([key,label], index) => {
     const info = map[key] || {};
     const cls = info.cls || "";
     const text = info.text || "等待";
-    return `<div class="stage ${cls}"><div class="s-name">${label}</div><div class="s-state">${esc(text)}</div></div>`;
+    return `<div class="stage ${cls}"><div class="s-name"><span>${label}</span><span class="s-index">${String(index + 1).padStart(2, "0")}</span></div><div class="s-state"><span class="state-dot"></span>${esc(text)}</div></div>`;
   }).join("");
 }
 renderStages();
@@ -271,11 +441,13 @@ renderStages();
 function resetWork(topic){
   state.finished = false;
   closeStream();
+  closeReportStream();
   $("alert").classList.remove("show");
   $("catalogCard").classList.remove("show");
-  $("reportLink").disabled = true;
+  $("reportCard").classList.remove("show");
+  resetReport(false);
   $("log").innerHTML = '<div class="empty">正在等待事件…</div>';
-  $("workTitle").textContent = topic ? topic.topic_name : "运行时间线";
+  $("workTitle").textContent = topic ? topic.topic_name : "研究运行台";
   $("workSub").textContent = topic ? `主题 ID：${topic.topic_id}` : "选择一个主题查看执行过程。";
   $("sysRun").textContent = "—";
   $("sysDuration").textContent = "—";
@@ -287,6 +459,135 @@ function resetWork(topic){
 
 function closeStream(){
   if (state.source){ state.source.close(); state.source = null; }
+}
+
+function closeReportStream(){
+  if (state.reportSource){ state.reportSource.close(); state.reportSource = null; }
+}
+
+function reportUrl(){
+  return `/api/topics/${encodeURIComponent(state.topic.topic_id)}/report`;
+}
+
+function setReportStatus(text){
+  $("reportMeta").textContent = text;
+}
+
+function setReportBusy(busy){
+  state.reportBusy = busy;
+  $("reportBtn").disabled = busy || !state.topic;
+  $("reportRegenBtn").disabled = busy;
+  if (busy){
+    $("reportBtn").textContent = "生成中…";
+    $("reportRegenBtn").hidden = true;
+  }
+}
+
+function resetReport(exists){
+  state.reportExists = !!exists;
+  closeReportStream();
+  state.reportRunId = null;
+  state.reportBusy = false;
+  $("reportLog").classList.remove("show");
+  $("reportLog").innerHTML = "";
+  $("reportBtn").disabled = !state.topic;
+  $("reportRegenBtn").disabled = false;
+  $("reportRegenBtn").hidden = !state.reportExists;
+  $("reportBtn").textContent = state.reportExists ? "打开调研报告 →" : "生成调研报告";
+  $("reportBtn").onclick = state.reportExists
+    ? () => window.open(reportUrl(), "_blank")
+    : generateReport;
+  $("reportRegenBtn").onclick = generateReport;
+  setReportStatus(
+    state.reportExists
+      ? "报告已生成，可直接打开；重新生成会覆盖当前版本。"
+      : "尚未生成；报告依赖模型，约需 1–2 分钟。"
+  );
+}
+
+function appendReportLog(text){
+  if (!text) return;
+  const box = $("reportLog");
+  box.classList.add("show");
+  const row = document.createElement("div");
+  row.className = "rev";
+  row.textContent = text;
+  box.appendChild(row);
+  box.scrollTop = box.scrollHeight;
+}
+
+async function generateReport(){
+  if (!state.topic || state.reportBusy) return;
+  setReportBusy(true);
+  setReportStatus("正在启动报告任务…");
+  $("reportLog").innerHTML = "";
+  $("reportLog").classList.add("show");
+  try{
+    const data = await api(reportUrl(), {method:"POST"});
+    state.reportRunId = data.job.run_id;
+    startReportStream(state.topic.topic_id, data.job.run_id);
+  }catch(error){
+    setReportBusy(false);
+    $("reportBtn").textContent = state.reportExists ? "打开调研报告 →" : "重试生成";
+    $("reportBtn").onclick = state.reportExists
+      ? () => window.open(reportUrl(), "_blank")
+      : generateReport;
+    $("reportRegenBtn").hidden = !state.reportExists;
+    setReportStatus(`无法生成报告：${error.message}`);
+  }
+}
+
+function startReportStream(topicId, runId){
+  closeReportStream();
+  const source = new EventSource(`/api/topics/${encodeURIComponent(topicId)}/events?run_id=${encodeURIComponent(runId)}`);
+  state.reportSource = source;
+  source.onmessage = (message) => {
+    let event;
+    try { event = JSON.parse(message.data); } catch { return; }
+    if (event.stage !== "report" && event.stage !== "run") return;
+    const data = event.data || {};
+    if (event.stage === "report"){
+      if (event.status === "running"){
+        setReportStatus(event.message || "生成中…");
+        appendReportLog(event.message);
+      } else if (event.status === "started"){
+        setReportStatus(event.message || "正在生成调研报告…");
+        appendReportLog(event.message);
+      } else if (event.status === "warning"){
+        appendReportLog(event.message || "报告生成降级");
+        if (!data.output) setReportStatus(event.message || "报告未生成");
+      }
+      return;
+    }
+    if (event.status === "started"){
+      setReportStatus("正在生成调研报告…");
+      appendReportLog("报告任务已启动");
+      return;
+    }
+    state.reportBusy = false;
+    closeReportStream();
+    $("reportBtn").disabled = false;
+    $("reportRegenBtn").disabled = false;
+    if (event.status === "completed"){
+      state.reportExists = true;
+      $("reportBtn").textContent = "打开调研报告 →";
+      $("reportBtn").onclick = () => window.open(reportUrl(), "_blank");
+      $("reportRegenBtn").hidden = false;
+      const papers = data.papers ? `，共 ${data.papers} 篇文献` : "";
+      setReportStatus(`报告已生成${papers}，可直接打开。`);
+      appendReportLog("报告已生成");
+      loadTopics();
+    } else if (event.status === "failed"){
+      $("reportBtn").textContent = "重试生成";
+      $("reportBtn").onclick = generateReport;
+      $("reportRegenBtn").hidden = !state.reportExists;
+      setReportStatus(`生成失败：${event.message || "未知原因"}`);
+      appendReportLog(data.hint || "可修正后重试；已生成的历史报告会保留。");
+    }
+  };
+  source.onerror = () => {
+    if (!state.reportBusy) closeReportStream();
+  };
 }
 
 async function api(path, options){
@@ -330,7 +631,7 @@ async function loadTopics(){
       const active = state.topic && state.topic.topic_id === topic.topic_id ? " active" : "";
       return `<button class="topic${active}" data-topic="${esc(topic.topic_id)}">
         <div class="t-name">${esc(topic.topic_name)}<span class="tag ${tagClass}">${tagText}</span></div>
-        <div class="t-meta">${topic.record_count} 条记录 · ${esc((topic.keywords||[]).join(" / ") || "无关键词")}</div>
+        <div class="t-meta">${topic.record_count} 条记录${topic.report_exists ? " · 报告已生成" : ""} · ${esc((topic.keywords||[]).join(" / ") || "无关键词")}</div>
       </button>`;
     }).join("");
     list.querySelectorAll(".topic").forEach((button) => {
@@ -369,10 +670,15 @@ async function selectTopic(topicId){
       $("catalogMeta").textContent = `${topic.record_count} 条记录，来源：${(topic.sources||[]).join("、") || "—"}`;
       $("catalogLink").onclick = () => window.open(`/api/topics/${encodeURIComponent(topic.topic_id)}/catalog`, "_blank");
       $("openCatalogBtn").onclick = $("catalogLink").onclick;
-    }
-    if (topic.report_exists){
-      $("reportLink").disabled = false;
-      $("reportLink").onclick = () => window.open(`/api/topics/${encodeURIComponent(topic.topic_id)}/report`, "_blank");
+      $("reportCard").classList.add("show");
+      resetReport(topic.report_exists);
+      if (topic.active_report){
+        state.reportRunId = topic.active_report.run_id;
+        setReportBusy(true);
+        $("reportLog").classList.add("show");
+        setReportStatus("报告任务仍在运行，已重新连接进度…");
+        startReportStream(topic.topic_id, topic.active_report.run_id);
+      }
     }
     await loadTopics();
   }catch(error){
@@ -438,12 +744,10 @@ function handleEvent(event){
     $("catalogLink").onclick = link;
     $("openCatalogBtn").onclick = link;
     $("openCatalogBtn").disabled = false;
-    if (data.report){
-      $("reportLink").disabled = false;
-      $("reportLink").onclick = () => window.open(`/api/topics/${encodeURIComponent(state.topic.topic_id)}/report`, "_blank");
-    } else {
-      $("reportLink").disabled = true;
-    }
+    // A replayed run may predate an existing report. Only a newly started
+    // pipeline (which reset this state) should invalidate that report.
+    $("reportCard").classList.add("show");
+    resetReport(state.reportExists);
     closeStream();
     loadTopics();
   }

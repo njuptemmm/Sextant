@@ -152,6 +152,9 @@ def test_render_catalog_produces_html(settings):
     html = Path(target).read_text(encoding="utf-8")
     assert "Evaluating LLM agents with benchmarks" in html
     assert "Agent Evaluation" in html
+    assert 'id="themeToggle"' in html
+    assert "sextant-theme" in html
+    assert 'data-theme="dark"' in html
     assert (root / RANKED_FILE).exists()
 
 
